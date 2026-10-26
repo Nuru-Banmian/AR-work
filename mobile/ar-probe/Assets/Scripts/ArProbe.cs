@@ -24,6 +24,8 @@ public sealed class ArProbe : MonoBehaviour
     private AROcclusionManager occlusion;
     private GameObject originRoot, cameraHud;
     private Coroutine starting;
+    private bool arReady;
+    private string viewingKey;
     public bool CameraActive { get; private set; }
     private bool useDepth;
     public const string DepthPreference = "arwork.depth-assisted";
@@ -101,8 +103,46 @@ public sealed class ArProbe : MonoBehaviour
         raycasts = originObject.AddComponent<ARRaycastManager>();
         anchors = originObject.AddComponent<ARAnchorManager>();
         originRoot = originObject;
+        if (inspectionMode)
+        {
+            var images = originObject.AddComponent<ARTrackedImageManager>();
+            images.enabled = false;
+            card = originObject.AddComponent<CardLocalization>();
+            card.Initialize(images);
+        }
         originObject.SetActive(!inspectionMode);
         origin.RequestedTrackingOriginMode = XROrigin.TrackingOriginMode.Device;
+    }
+
+    private CardLocalization card;
+    private ReferenceTarget selectedTarget;
+    public bool IsEnrolling { get; private set; }
+    public void UseReference(ReferenceTarget target) { selectedTarget = target; }
+    public void BeginEnrollment() { IsEnrolling = true; EnterCamera(); }
+    public IEnumerator ValidateReferenceImage(Texture2D image, float width, System.Action<bool> done) => card.ValidateImage(image, width, done);
+    public Camera SceneCamera => originRoot.GetComponentInChildren<Camera>(true);
+    private CardReference viewingReference;
+    private GameObject restoredMarker;
+    public bool IsViewing => viewingReference != null;
+    public bool TryCaptureReference(out CardReference reference)
+    {
+        reference = null;
+        if (card == null || !card.TryPose(out var pose) || !HasTrackedDraft) return false;
+        reference = ReferenceFrame.Capture(selectedTarget, pose, CurrentPosition);
+        return reference.IsSupported;
+    }
+    public void BeginView(CardReference reference, string issueStatus, string server, string id)
+    {
+        if (reference == null || !reference.IsSupported) return;
+        viewingReference = reference; viewingKey = server + "/" + id;
+        EnterCamera();
+        restoredMarker = GameObject.CreatePrimitive(PrimitiveType.Cube);
+        restoredMarker.name = "Restored inspection point";
+        restoredMarker.transform.localScale = Vector3.one * 0.1f;
+        restoredMarker.GetComponent<Renderer>().sharedMaterial = markerMaterial;
+        SetMarkerColor(restoredMarker.GetComponent<Renderer>(), MarkerColor(issueStatus));
+        Destroy(restoredMarker.GetComponent<Collider>());
+        restoredMarker.SetActive(false);
     }
 
     private IEnumerator Start()
@@ -113,7 +153,8 @@ public sealed class ArProbe : MonoBehaviour
     public void EnterCamera()
     {
         if (CameraActive) return;
-        CameraActive = true;
+        CameraActive = true; arReady = false;
+        card?.Clear();
         cameraHud.SetActive(true);
         GetComponent<IssueLiveUpdates>()?.ShowLabel(false);
         starting = StartCoroutine(StartAr());
@@ -121,7 +162,22 @@ public sealed class ArProbe : MonoBehaviour
 
     public void LeaveCamera()
     {
-        CameraActive = false;
+        CameraActive = false; arReady = false; viewingKey = null;
+        IsEnrolling = false;
+        card?.Clear();
+        viewingReference = null;
+        if (restoredMarker != null) Destroy(restoredMarker);
+        restoredMarker = null;
+        // No old-session anchors may become visible when entering a new camera session.
+        if (inspectionMode)
+        {
+            foreach (var anchor in savedMarkers.Values) if (anchor != null) Destroy(anchor.gameObject);
+            savedMarkers.Clear();
+            if (marker != null) Destroy(marker);
+            if (markerAnchor != null) Destroy(markerAnchor.gameObject);
+            marker = null; markerAnchor = null;
+            reportForm?.ClearPosition();
+        }
         if (starting != null) StopCoroutine(starting);
         starting = null;
         session.enabled = false;
@@ -177,6 +233,8 @@ public sealed class ArProbe : MonoBehaviour
             || ARSession.state == ARSessionState.SessionTracking)
         {
             session.enabled = true;
+            if (inspectionMode) { session.Reset(); if (!IsEnrolling && selectedTarget != null) yield return card.Prepare(selectedTarget); }
+            arReady = true;
             notice.text = "缓慢移动手机扫描地面或墙面，点击表面放置标记。";
         }
         else
@@ -206,7 +264,7 @@ public sealed class ArProbe : MonoBehaviour
 
     private void Update()
     {
-        if (inspectionMode && !CameraActive) return;
+        if (inspectionMode && (!CameraActive || !arReady)) return;
         foreach (var plane in planes.trackables)
         {
             // The visualizer owns renderer visibility. Disable it when the whole session loses tracking.
@@ -217,6 +275,24 @@ public sealed class ArProbe : MonoBehaviour
         if (inspectionMode && useDepth)
             status.text += occlusion.currentEnvironmentDepthMode == EnvironmentDepthMode.Disabled
                 ? " · 深度准备中/不可用" : " · 深度辅助已启用";
+        if (inspectionMode)
+        {
+            if (IsEnrolling) { notice.text = "正对固定标牌，使图案四边贴合取景框；不要拍摄整个房间。"; return; }
+            bool tracked = card.TryPose(out var cardPose);
+            if (viewingReference != null)
+            {
+                if (restoredMarker != null)
+                {
+                    restoredMarker.SetActive(tracked);
+                    if (tracked) restoredMarker.transform.position = ReferenceFrame.ToWorld(cardPose, viewingReference.Point);
+                }
+                notice.text = tracked ? "已恢复相对点位；参照如被移动，位置将不可信，须换版本重新采集。" : card.Message + " 跟踪失效时隐藏点位，请重新扫描。";
+                return;
+            }
+            if (marker != null) marker.SetActive(tracked && markerAnchor != null && markerAnchor.trackingState == TrackingState.Tracking);
+            notice.text = tracked ? "参照图案跟踪正常，可点击表面选点。参照被挪动须换版本重新采集。" : card.Message + " 跟踪失效时不能选点或拍摄，请重新扫描。";
+            if (!tracked) return;
+        }
         if (ARSession.state != ARSessionState.SessionTracking || Input.touchCount == 0) return;
         if (reportForm != null && reportForm.PositionLocked) return;
         var touch = Input.GetTouch(0);
@@ -297,7 +373,7 @@ public sealed class ArProbe : MonoBehaviour
         }
         lastPosition = hit.pose.position;
         marker.transform.SetParent(newAnchor.transform, false);
-        marker.transform.localPosition = Vector3.up * 0.05f;
+        marker.transform.localPosition = inspectionMode ? Vector3.zero : Vector3.up * 0.05f;
         marker.transform.localRotation = Quaternion.identity;
         if (markerAnchor != null) Destroy(markerAnchor.gameObject);
         markerAnchor = newAnchor;
@@ -307,7 +383,8 @@ public sealed class ArProbe : MonoBehaviour
     }
 
     public Vector3 CurrentPosition => markerAnchor != null ? markerAnchor.transform.position : lastPosition;
-    public bool HasTrackedDraft => markerAnchor != null && markerAnchor.trackingState == TrackingState.Tracking;
+    public bool HasTrackedDraft => markerAnchor != null && markerAnchor.trackingState == TrackingState.Tracking &&
+        (!inspectionMode || (CameraActive && card != null && card.TryPose(out _)));
 
     public void KeepSubmittedMarker(string server, string id, bool replaceExisting = false)
     {
@@ -341,14 +418,16 @@ public sealed class ArProbe : MonoBehaviour
         renderer.SetPropertyBlock(tint);
     }
 
+    private static Color MarkerColor(string value) => value == "resolved" ? new Color(0.1f, 0.9f, 0.3f) :
+        value == "in_progress" ? new Color(0.15f, 0.5f, 1f) : new Color(1f, 0.4f, 0.05f);
+
     public void UpdateMarkerStatus(string server, string id, string value)
     {
         var key = server + "/" + id;
         markerStatuses[key] = value;
+        if (viewingKey == key && restoredMarker != null) SetMarkerColor(restoredMarker.GetComponent<Renderer>(), MarkerColor(value));
         if (!savedMarkers.TryGetValue(key, out var anchor) || anchor == null) return;
-        var color = value == "resolved" ? new Color(0.1f, 0.9f, 0.3f) :
-            value == "in_progress" ? new Color(0.15f, 0.5f, 1f) : new Color(1f, 0.4f, 0.05f);
-        SetMarkerColor(anchor.GetComponentInChildren<Renderer>(), color);
+        SetMarkerColor(anchor.GetComponentInChildren<Renderer>(), MarkerColor(value));
     }
 
     public void BeginRemark()

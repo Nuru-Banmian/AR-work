@@ -97,6 +97,7 @@ public sealed class InspectionNavigationRunner : MonoBehaviour
                         lastPostBody = new StreamReader(request.InputStream).ReadToEnd();
                         lastPostKey = request.Headers["Idempotency-Key"]; lastPostPort = request.Url.Port;
                     }
+                    if (request.Url.AbsolutePath == "/api/references") body = "{\"data\":[]}";
                     if (request.Url.AbsolutePath == "/health") body = "{\"data\":{\"status\":\"ok\"}}";
                     if (responseMode == 1 && request.Url.AbsolutePath == "/api/issues") body = "{\"data\":[]}";
                     if (responseMode == 2) context.Response.StatusCode = 500;
@@ -149,10 +150,9 @@ public sealed class InspectionNavigationRunner : MonoBehaviour
         responseMode = 0; Field<Button>(history, "refresh").onClick.Invoke(); yield return new WaitForSecondsRealtime(1);
         Check(rows.childCount == 1, "refresh recovers records after failure");
         rows.GetComponentInChildren<Button>().onClick.Invoke(); yield return new WaitForSecondsRealtime(1);
-        Call(history, "BeginRemark");
-        Check(probe.CameraActive && history.IsRemarking, "remark explicitly enters camera");
-        Field<Button>(history, "cancelRemark").onClick.Invoke();
-        Check(!probe.CameraActive && !history.IsRemarking && history.IsOpen, "cancel remark stops camera and returns detail");
+        Call(history, "BeginRemark"); yield return new WaitForSecondsRealtime(1);
+        Check(!probe.CameraActive && !history.IsRemarking, "remark without a registered reference does not open camera");
+        Check(history.IsOpen && Field<Text>(history, "message").text.Contains("参照"), "missing reference explains setup while preserving detail");
         form.ShowHome(); history.Hide();
         Check(!history.IsOpen && !history.Busy, "navigation can cancel loading");
         const string frozen = "{\"title\":\"pending A\",\"description\":\"original\",\"priority\":\"medium\",\"position\":{\"x\":1,\"y\":2,\"z\":3}}";

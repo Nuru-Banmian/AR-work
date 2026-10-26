@@ -8,7 +8,7 @@ using UnityEngine.UI;
 public sealed class IssueReportForm : MonoBehaviour
 {
     [Serializable] private sealed class Position { public float x, y, z; }
-    [Serializable] private sealed class CreateIssue { public string title, description, priority; public Position position; }
+    [Serializable] private sealed class CreateIssue { public string title, description, priority; public Position position; public CardReference reference; }
     [Serializable] private sealed class SavedIssue { public string id, title, priority, status; }
     [Serializable] private sealed class Success { public SavedIssue data; }
     [Serializable] private sealed class HealthData { public string status; }
@@ -18,6 +18,8 @@ public sealed class IssueReportForm : MonoBehaviour
 
     private GameObject reportPanel, homeControls, settingsPanel, captureControls, previewPanel;
     private Canvas canvas;
+    public ReferenceCatalog References { get; private set; }
+    private ReferenceSetup referenceSetup;
     private RawImage preview;
     private Texture2D snapshot;
     private Action snapshotConfirmed;
@@ -38,6 +40,7 @@ public sealed class IssueReportForm : MonoBehaviour
     private int priorityIndex = 1;
     private string requestKey, requestBody, requestAddress;
     private Vector3 lockedPosition;
+    private CardReference lockedReference;
     private readonly string[] priorities = { "low", "medium", "high" };
 
     public void Initialize(Transform parent, ArProbe owner)
@@ -66,6 +69,13 @@ public sealed class IssueReportForm : MonoBehaviour
         address = Field(settingsPanel.transform, "服务地址，如 http://电脑IP:8080", 490, 75, false);
         activeServer = PlayerPrefs.GetString("arwork.server", "http://192.168.1.100:8080");
         address.text = activeServer;
+        References = gameObject.AddComponent<ReferenceCatalog>(); References.SetServer(activeServer);
+        referenceSetup = gameObject.AddComponent<ReferenceSetup>(); referenceSetup.Initialize(parent, References, probe);
+        ButtonAt(settingsPanel.transform, "现场参照：登记 / 选择", 580, 0.03f, 0.97f, () => {
+            if (busy || !SaveAddress()) return;
+            settingsPanel.SetActive(false);
+            referenceSetup.Open(activeServer, () => settingsPanel.SetActive(true));
+        });
         settingsMessage = Label(settingsPanel.transform, 27);
         settingsMessage.rectTransform.offsetMin = new Vector2(25, 10);
         settingsMessage.rectTransform.offsetMax = new Vector2(-25, -540);
@@ -86,6 +96,7 @@ public sealed class IssueReportForm : MonoBehaviour
         ButtonAt(captureControls.transform, "返回首页", 25, 0.03f, 0.45f, () => { if (!NavigationLocked) ShowHome(); });
         capture = ButtonAt(captureControls.transform, "快照 / 下一步", 25, 0.5f, 0.97f, () => {
             if (!hasPosition || !probe.HasTrackedDraft) return;
+            if (!probe.TryCaptureReference(out lockedReference)) return;
             lockedPosition = probe.CurrentPosition;
             TakeSnapshot(() => { PositionLocked = true; probe.LeaveCamera(); captureControls.SetActive(false); reportPanel.SetActive(true); RefreshControls(); });
         });
@@ -156,7 +167,7 @@ public sealed class IssueReportForm : MonoBehaviour
         if (history != null && history.IsRemarking) history.MarkPositionSelected();
         else { draftServer = activeServer; hasPosition = true; }
     }
-    public void ClearPosition() { if (history != null && history.IsRemarking) history.ClearPosition(); else { hasPosition = false; RefreshControls(); } }
+    public void ClearPosition() { if (history != null && history.IsRemarking) history.ClearPosition(); else if (!positionLocked && requestKey == null) { hasPosition = false; RefreshControls(); } }
 
     private void EditOrCancel()
     {
@@ -188,6 +199,7 @@ public sealed class IssueReportForm : MonoBehaviour
         activeServer = value;
         PlayerPrefs.SetString("arwork.server", value); PlayerPrefs.Save();
         live.SetServer(value);
+        References.SetServer(value);
         return true;
     }
 
@@ -218,9 +230,10 @@ public sealed class IssueReportForm : MonoBehaviour
         if (string.IsNullOrWhiteSpace(title.text)) { message.text = "请填写问题标题。"; yield break; }
         if (requestKey == null)
         {
+            if (lockedReference == null || !lockedReference.IsSupported) { message.text = "需扫描现场参照重新采集。"; yield break; }
             var point = lockedPosition;
             var payload = new CreateIssue { title = title.text.Trim(), description = description.text,
-                priority = priorities[priorityIndex], position = new Position { x = point.x, y = point.y, z = point.z } };
+                reference = lockedReference, priority = priorities[priorityIndex], position = new Position { x = point.x, y = point.y, z = point.z } };
             requestKey = Guid.NewGuid().ToString("N");
             requestBody = JsonUtility.ToJson(payload);
             requestAddress = draftServer ?? activeServer;
@@ -302,7 +315,19 @@ public sealed class IssueReportForm : MonoBehaviour
             RefreshControls(); return;
         }
         if (positionLocked || busy) { reportPanel.SetActive(true); return; }
-        captureControls.SetActive(true); probe.EnterCamera();
+        StartCoroutine(BeginCapture());
+    }
+
+    private IEnumerator BeginCapture()
+    {
+        busy = true; yield return References.Refresh(); busy = false;
+        var target = References.Selected;
+        if (target == null)
+        {
+            settingsPanel.SetActive(true); settingsMessage.text = "请先在现场参照中登记或选择固定标牌。";
+            RefreshControls(); yield break;
+        }
+        probe.UseReference(target); captureControls.SetActive(true); probe.EnterCamera(); RefreshControls();
     }
 
     private void Update()
@@ -324,6 +349,7 @@ public sealed class IssueReportForm : MonoBehaviour
         yield return new WaitForEndOfFrame();
         try
         {
+            if (!probe.HasTrackedDraft) throw new InvalidOperationException("Reference tracking lost before capture");
             ClearSnapshot(); snapshot = new Texture2D(Screen.width, Screen.height, TextureFormat.RGB24, false);
             snapshot.ReadPixels(new Rect(0, 0, Screen.width, Screen.height), 0, 0);
             snapshot.Apply(); preview.texture = snapshot;
