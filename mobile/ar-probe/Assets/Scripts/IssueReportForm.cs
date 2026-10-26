@@ -16,8 +16,18 @@ public sealed class IssueReportForm : MonoBehaviour
     [Serializable] private sealed class PendingRequest { public string key, body, server; }
     private const string PendingPreference = "arwork.pending-report";
 
+    private GameObject reportPanel, homeControls, settingsPanel, captureControls, previewPanel;
+    private Canvas canvas;
+    private RawImage preview;
+    private Texture2D snapshot;
+    private Action snapshotConfirmed;
+    private Button capture;
+    private bool capturing;
+    private string activeServer, draftServer;
+    private Text settingsMessage;
+    public bool NavigationLocked => busy || capturing;
     private bool positionLocked;
-    public bool PositionLocked { get => history != null && history.IsRemarking ? history.RemarkLocked : positionLocked || (history != null && history.IsOpen); private set => positionLocked = value; }
+    public bool PositionLocked { get => capturing || (history != null && history.IsRemarking ? history.RemarkLocked : positionLocked || !probe.CameraActive || (history != null && history.IsOpen)); private set => positionLocked = value; }
     private IssueHistoryPanel history;
     private IssueLiveUpdates live;
     private ArProbe probe;
@@ -33,7 +43,9 @@ public sealed class IssueReportForm : MonoBehaviour
     public void Initialize(Transform parent, ArProbe owner)
     {
         probe = owner;
+        canvas = parent.GetComponentInParent<Canvas>();
         var panel = new GameObject("Report form", typeof(RectTransform), typeof(Image));
+        reportPanel = panel;
         panel.transform.SetParent(parent, false);
         panel.GetComponent<Image>().color = new Color(0.02f, 0.05f, 0.08f, 0.94f);
         var rect = panel.GetComponent<RectTransform>();
@@ -41,18 +53,55 @@ public sealed class IssueReportForm : MonoBehaviour
         rect.pivot = new Vector2(0.5f, 0); rect.sizeDelta = new Vector2(0, 795);
         rect.anchoredPosition = new Vector2(0, 130);
         history = gameObject.AddComponent<IssueHistoryPanel>();
-        history.Initialize(parent, probe, () => panel.SetActive(true));
+        history.Initialize(parent, probe, ShowHome);
         live = gameObject.AddComponent<IssueLiveUpdates>();
         live.Initialize(parent, probe, history);
-        historyButton = ButtonAt(rect, "问题列表", 725, 0.03f, 0.97f, () => {
-            if (busy || !SaveAddress()) return;
-            panel.SetActive(false);
-            history.Open(address.text);
+        homeControls = NavigationPanel(parent, "首页入口", 120);
+        historyButton = ButtonAt(homeControls.transform, "新增问题", 25, 0.03f, 0.48f, BeginReport);
+        ButtonAt(homeControls.transform, "设置", 25, 0.52f, 0.97f, () => {
+            if (history.Busy) return;
+            history.Hide(); homeControls.SetActive(false); settingsPanel.SetActive(true);
         });
-        address = Field(rect, "服务地址，如 http://电脑IP:8080", 650, 60, false);
-        address.text = PlayerPrefs.GetString("arwork.server", "http://192.168.1.100:8080");
-        address.onEndEdit.AddListener(value => SaveAddress());
-        test = ButtonAt(rect, "测试连接", 575, 0.03f, 0.97f, () => StartCoroutine(TestConnection()));
+        settingsPanel = NavigationPanel(parent, "设置", 650);
+        address = Field(settingsPanel.transform, "服务地址，如 http://电脑IP:8080", 490, 75, false);
+        activeServer = PlayerPrefs.GetString("arwork.server", "http://192.168.1.100:8080");
+        address.text = activeServer;
+        settingsMessage = Label(settingsPanel.transform, 27);
+        settingsMessage.rectTransform.offsetMin = new Vector2(25, 10);
+        settingsMessage.rectTransform.offsetMax = new Vector2(-25, -540);
+        Button depth = null;
+        depth = ButtonAt(settingsPanel.transform, probe.DepthAssistanceEnabled ? "深度辅助：开" : "深度辅助：关", 140, 0.03f, 0.97f, () => {
+            probe.SetDepthAssistance(!probe.DepthAssistanceEnabled);
+            depth.GetComponentInChildren<Text>().text = probe.DepthAssistanceEnabled ? "深度辅助：开" : "深度辅助：关";
+            settingsMessage.text = probe.DepthAssistanceEnabled
+                ? "下次采集使用深度辅助；不支持时仍使用平面。发热或卡顿时可关闭。"
+                : "已关闭深度辅助，采集使用地面或墙面检测。";
+        });
+        test = ButtonAt(settingsPanel.transform, "保存并测试连接", 400, 0.03f, 0.97f, () => StartCoroutine(TestConnection()));
+        ButtonAt(settingsPanel.transform, "保存并返回首页", 310, 0.03f, 0.97f, () => { if (!busy && SaveAddress()) ShowHome(); });
+        ButtonAt(settingsPanel.transform, "取消", 225, 0.03f, 0.97f, () => {
+            if (busy) return; address.text = activeServer; ShowHome();
+        });
+        captureControls = NavigationPanel(parent, "采集操作", 170);
+        ButtonAt(captureControls.transform, "返回首页", 25, 0.03f, 0.45f, () => { if (!NavigationLocked) ShowHome(); });
+        capture = ButtonAt(captureControls.transform, "快照 / 下一步", 25, 0.5f, 0.97f, () => {
+            if (!hasPosition || !probe.HasTrackedDraft) return;
+            lockedPosition = probe.CurrentPosition;
+            TakeSnapshot(() => { PositionLocked = true; probe.LeaveCamera(); captureControls.SetActive(false); reportPanel.SetActive(true); RefreshControls(); });
+        });
+        previewPanel = NavigationPanel(parent, "快照确认", 1600);
+        preview = new GameObject("现场快照", typeof(RectTransform), typeof(RawImage)).GetComponent<RawImage>();
+        preview.transform.SetParent(previewPanel.transform, false);
+        preview.rectTransform.anchorMin = new Vector2(0.03f, 0.17f); preview.rectTransform.anchorMax = new Vector2(0.97f, 0.98f);
+        preview.rectTransform.offsetMin = preview.rectTransform.offsetMax = Vector2.zero;
+        preview.gameObject.AddComponent<AspectRatioFitter>().aspectMode = AspectRatioFitter.AspectMode.FitInParent;
+        ButtonAt(previewPanel.transform, "重拍", 30, 0.03f, 0.48f, () => {
+            ClearSnapshot(); previewPanel.SetActive(false); capturing = false;
+            if (history.IsRemarking) history.ShowRemarkControls(); else captureControls.SetActive(true);
+        });
+        ButtonAt(previewPanel.transform, "确认 / 下一步", 30, 0.52f, 0.97f, () => {
+            previewPanel.SetActive(false); capturing = false; var confirm = snapshotConfirmed; snapshotConfirmed = null; confirm?.Invoke();
+        });
         title = Field(rect, "问题标题（必填）", 500, 65, false);
         description = Field(rect, "补充描述（选填）", 385, 100, true);
         priority = ButtonAt(rect, "优先级：中", 310, 0.03f, 0.48f, () => {
@@ -60,7 +109,7 @@ public sealed class IssueReportForm : MonoBehaviour
             priorityLabel.text = "优先级：" + InspectionUi.Priority(priorities[priorityIndex]);
         });
         priorityLabel = priority.GetComponentInChildren<Text>();
-        edit = ButtonAt(rect, "填写问题", 310, 0.52f, 0.97f, EditOrCancel);
+        edit = ButtonAt(rect, "调整位置", 310, 0.52f, 0.97f, EditOrCancel);
         editLabel = edit.GetComponentInChildren<Text>();
         submit = ButtonAt(rect, "提交问题", 235, 0.03f, 0.97f, () => StartCoroutine(Submit()));
         message = Label(rect, 27);
@@ -69,8 +118,10 @@ public sealed class IssueReportForm : MonoBehaviour
         textRect.pivot = new Vector2(0.5f, 0); textRect.sizeDelta = new Vector2(-50, 155);
         textRect.anchoredPosition = new Vector2(0, 10);
         message.text = "先点击地面或墙面选点，再填写问题。";
+        ButtonAt(rect, "返回首页（保留当前草稿）", 650, 0.03f, 0.97f, () => { if (!NavigationLocked) ShowHome(); });
         RestorePending();
-        SaveAddress();
+        live.SetServer(activeServer);
+        reportPanel.SetActive(false); settingsPanel.SetActive(false); captureControls.SetActive(false); previewPanel.SetActive(false);
         RefreshControls();
     }
 
@@ -85,7 +136,7 @@ public sealed class IssueReportForm : MonoBehaviour
             if (string.IsNullOrEmpty(pending.key) || string.IsNullOrEmpty(pending.server) || draft.position == null)
                 throw new ArgumentException("Invalid pending report");
             requestKey = pending.key; requestBody = pending.body; requestAddress = pending.server;
-            address.text = pending.server; title.text = draft.title; description.text = draft.description;
+            draftServer = pending.server; title.text = draft.title; description.text = draft.description;
             priorityIndex = Array.IndexOf(priorities, draft.priority);
             if (priorityIndex < 0) throw new ArgumentException("Invalid pending priority");
             priorityLabel.text = "优先级：" + InspectionUi.Priority(draft.priority);
@@ -100,14 +151,19 @@ public sealed class IssueReportForm : MonoBehaviour
         }
     }
 
-    public void MarkPositionSelected() { if (history != null && history.IsRemarking) history.MarkPositionSelected(); else hasPosition = true; }
+    public void MarkPositionSelected()
+    {
+        if (history != null && history.IsRemarking) history.MarkPositionSelected();
+        else { draftServer = activeServer; hasPosition = true; }
+    }
     public void ClearPosition() { if (history != null && history.IsRemarking) history.ClearPosition(); else { hasPosition = false; RefreshControls(); } }
 
     private void EditOrCancel()
     {
-        if (busy || (!saved && requestKey != null)) return;
+        if (busy || (!saved && requestKey != null) || (!saved && draftServer != activeServer)) return;
         if (saved)
         {
+            draftServer = activeServer;
             saved = false; hasPosition = false; PositionLocked = false;
             requestKey = requestBody = requestAddress = null;
             title.text = ""; description.text = "";
@@ -116,6 +172,8 @@ public sealed class IssueReportForm : MonoBehaviour
         else if (PositionLocked) { PositionLocked = false; message.text = "内容已保留，请点击表面调整位置。"; }
         else if (!hasPosition) { message.text = "请先点击地面或墙面选点。"; }
         else { lockedPosition = probe.CurrentPosition; PositionLocked = true; message.text = "位置已确认，请填写问题。"; }
+        reportPanel.SetActive(false); captureControls.SetActive(true); PositionLocked = false;
+        ClearSnapshot(); probe.EnterCamera();
         RefreshControls();
     }
 
@@ -125,8 +183,9 @@ public sealed class IssueReportForm : MonoBehaviour
         if (!Uri.TryCreate(value, UriKind.Absolute, out var uri) ||
             (uri.Scheme != "http" && uri.Scheme != "https") || uri.AbsolutePath != "/" ||
             !string.IsNullOrEmpty(uri.Query) || !string.IsNullOrEmpty(uri.Fragment) || !string.IsNullOrEmpty(uri.UserInfo))
-        { message.text = "地址格式有误，请填写 http://电脑局域网IP:8080。"; return false; }
+        { settingsMessage.text = "地址格式有误，请填写 http://电脑局域网IP:8080。"; return false; }
         address.text = value;
+        activeServer = value;
         PlayerPrefs.SetString("arwork.server", value); PlayerPrefs.Save();
         live.SetServer(value);
         return true;
@@ -136,7 +195,7 @@ public sealed class IssueReportForm : MonoBehaviour
     {
         if (busy || !SaveAddress()) yield break;
         live.Refresh();
-        busy = true; RefreshControls(); message.text = "正在测试连接…";
+        busy = true; RefreshControls(); settingsMessage.text = "正在测试连接…";
         using (var request = UnityWebRequest.Get(address.text + "/health"))
         {
             request.timeout = 10;
@@ -146,7 +205,7 @@ public sealed class IssueReportForm : MonoBehaviour
             {
                 try { healthy = JsonUtility.FromJson<Health>(request.downloadHandler.text)?.data?.status == "ok"; } catch (ArgumentException) { }
             }
-            message.text = healthy
+            settingsMessage.text = healthy
                 ? "连接成功。" : "连接失败，请检查服务地址、网络和电脑防火墙。";
         }
         busy = false; RefreshControls();
@@ -154,8 +213,8 @@ public sealed class IssueReportForm : MonoBehaviour
 
     private IEnumerator Submit()
     {
-        if (busy || saved || !PositionLocked || !hasPosition) yield break;
-        if (requestKey == null && !SaveAddress()) yield break;
+        if (busy || saved || !positionLocked || !hasPosition) yield break;
+
         if (string.IsNullOrWhiteSpace(title.text)) { message.text = "请填写问题标题。"; yield break; }
         if (requestKey == null)
         {
@@ -164,7 +223,7 @@ public sealed class IssueReportForm : MonoBehaviour
                 priority = priorities[priorityIndex], position = new Position { x = point.x, y = point.y, z = point.z } };
             requestKey = Guid.NewGuid().ToString("N");
             requestBody = JsonUtility.ToJson(payload);
-            requestAddress = address.text;
+            requestAddress = draftServer ?? activeServer;
             PlayerPrefs.SetString(PendingPreference, JsonUtility.ToJson(new PendingRequest {
                 key = requestKey, body = requestBody, server = requestAddress }));
             PlayerPrefs.Save();
@@ -202,13 +261,100 @@ public sealed class IssueReportForm : MonoBehaviour
     private void RefreshControls()
     {
         bool pending = requestKey != null && !saved;
-        address.interactable = !busy && !pending;
-        title.interactable = description.interactable = priority.interactable = PositionLocked && !busy && !saved && !pending;
-        submit.interactable = PositionLocked && !busy && !saved;
+        address.interactable = !busy;
+        title.interactable = description.interactable = priority.interactable = positionLocked && !busy && !saved && !pending;
+        submit.interactable = positionLocked && !busy && !saved;
         test.interactable = !busy;
         historyButton.interactable = !busy;
-        edit.interactable = !busy && !pending;
-        editLabel.text = saved ? "继续上报" : pending ? "等待重试" : PositionLocked ? "调整位置" : "填写问题";
+        edit.interactable = !busy && !pending && (saved || draftServer == activeServer);
+        editLabel.text = saved ? "继续上报" : pending ? "等待重试" : "调整位置";
+    }
+
+    private void Start() { ShowHome(); }
+
+    public void ShowRemarkNavigation(bool remarking)
+    {
+        homeControls.SetActive(!remarking);
+    }
+
+    public void ShowHome()
+    {
+        probe.LeaveCamera();
+        ClearSnapshot();
+        reportPanel.SetActive(false); captureControls.SetActive(false); previewPanel.SetActive(false);
+        settingsPanel.SetActive(false); homeControls.SetActive(true);
+        history.Open(activeServer);
+    }
+
+    private void BeginReport()
+    {
+        if (history.Busy) return;
+        history.Hide(); homeControls.SetActive(false);
+        if (requestKey != null && !saved && requestAddress != activeServer)
+        {
+            reportPanel.SetActive(true);
+            message.text = "待确认上报属于 " + requestAddress + "，重试仍发送至原服务；完成后可新增当前服务记录。";
+            return;
+        }
+        if (draftServer != null && draftServer != activeServer)
+        {
+            reportPanel.SetActive(true); message.text = "当前草稿属于 " + draftServer + "，提交将发送至该服务。可返回设置切回原服务继续采集。";
+            RefreshControls(); return;
+        }
+        if (positionLocked || busy) { reportPanel.SetActive(true); return; }
+        captureControls.SetActive(true); probe.EnterCamera();
+    }
+
+    private void Update()
+    {
+        if (capture != null) capture.interactable = !capturing && hasPosition && probe.HasTrackedDraft;
+    }
+
+    public void TakeSnapshot(Action confirmed)
+    {
+        if (capturing || !probe.CameraActive || !probe.HasTrackedDraft ||
+            UnityEngine.XR.ARFoundation.ARSession.state != UnityEngine.XR.ARFoundation.ARSessionState.SessionTracking) return;
+        snapshotConfirmed = confirmed; StartCoroutine(Capture());
+    }
+
+    private IEnumerator Capture()
+    {
+        capturing = true; captureControls.SetActive(false); history.HideRemarkControls();
+        canvas.enabled = false;
+        yield return new WaitForEndOfFrame();
+        try
+        {
+            ClearSnapshot(); snapshot = new Texture2D(Screen.width, Screen.height, TextureFormat.RGB24, false);
+            snapshot.ReadPixels(new Rect(0, 0, Screen.width, Screen.height), 0, 0);
+            snapshot.Apply(); preview.texture = snapshot;
+            preview.GetComponent<AspectRatioFitter>().aspectRatio = (float)snapshot.width / snapshot.height;
+            previewPanel.SetActive(true);
+        }
+        catch (Exception exception)
+        {
+            capturing = false;
+            if (history.IsRemarking) history.ShowRemarkControls(); else captureControls.SetActive(true);
+            Debug.LogException(exception);
+        }
+        finally { canvas.enabled = true; }
+    }
+
+    private void ClearSnapshot()
+    {
+        preview.texture = null;
+        if (snapshot != null) Destroy(snapshot);
+        snapshot = null;
+    }
+
+    private static GameObject NavigationPanel(Transform parent, string name, float height)
+    {
+        var obj = new GameObject(name, typeof(RectTransform), typeof(Image));
+        obj.transform.SetParent(parent, false);
+        obj.GetComponent<Image>().color = new Color(0.02f, 0.05f, 0.08f, 1f);
+        var rect = obj.GetComponent<RectTransform>();
+        rect.anchorMin = Vector2.zero; rect.anchorMax = new Vector2(1, 0); rect.pivot = new Vector2(0.5f, 0);
+        rect.sizeDelta = new Vector2(0, height);
+        return obj;
     }
 
     internal static Text Label(Transform parent, int size)

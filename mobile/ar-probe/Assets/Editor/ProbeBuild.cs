@@ -2,6 +2,8 @@ using System;
 using System.IO;
 using UnityEditor;
 using UnityEditor.Build.Reporting;
+using UnityEditor.Android;
+using System.Xml;
 using UnityEditor.SceneManagement;
 using UnityEditor.XR.ARCore;
 using UnityEditor.XR.Management;
@@ -56,7 +58,7 @@ public static class ProbeBuild
             perTarget.CreateDefaultManagerSettingsForBuildTarget(group);
             general = perTarget.SettingsForBuildTarget(group);
         }
-        general.InitManagerOnStart = true;
+        general.InitManagerOnStart = !inspection;
         if (!XRPackageMetadataStore.AssignLoader(general.Manager, "UnityEngine.XR.ARCore.ARCoreLoader", group))
             throw new Exception("Cannot assign ARCore loader");
         EditorUtility.SetDirty(general);
@@ -102,5 +104,29 @@ public static class ProbeBuild
         material.color = color;
         EditorUtility.SetDirty(material);
         return material;
+    }
+}
+
+// Apply to the generated Unity manifest without taking ownership of its activity template.
+public sealed class InspectionPermissions : IPostGenerateGradleAndroidProject
+{
+    public int callbackOrder => 100;
+    public void OnPostGenerateGradleAndroidProject(string path)
+    {
+        var file = Path.Combine(path, "src/main/AndroidManifest.xml");
+        var xml = new XmlDocument(); xml.Load(file);
+        var application = xml.SelectSingleNode("/manifest/application");
+        const string android = "http://schemas.android.com/apk/res/android";
+        var namespaces = new XmlNamespaceManager(xml.NameTable);
+        namespaces.AddNamespace("android", android);
+        var metadata = application.SelectSingleNode("meta-data[@android:name='unityplayer.SkipPermissionsDialog']", namespaces) as XmlElement;
+        if (metadata == null)
+        {
+            metadata = xml.CreateElement("meta-data");
+            application.AppendChild(metadata);
+        }
+        metadata.SetAttribute("name", android, "unityplayer.SkipPermissionsDialog");
+        metadata.SetAttribute("value", android, "true");
+        xml.Save(file);
     }
 }
