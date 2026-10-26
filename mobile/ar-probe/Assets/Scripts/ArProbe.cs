@@ -8,7 +8,7 @@ using UnityEngine.UI;
 using UnityEngine.XR.ARFoundation;
 using UnityEngine.XR.ARSubsystems;
 
-// Shared horizontal-plane tracking for the standalone probe and inspection app.
+// Shared plane tracking for the standalone probe and inspection app.
 public sealed class ArProbe : MonoBehaviour
 {
     public bool inspectionMode;
@@ -19,6 +19,10 @@ public sealed class ArProbe : MonoBehaviour
     private ARPlaneManager planes;
     private ARRaycastManager raycasts;
     private ARAnchorManager anchors;
+    private AROcclusionManager occlusion;
+    private bool useDepth = true;
+    private Button depthToggle;
+    private string lastHitSource = "none";
     private ARAnchor markerAnchor;
     private GameObject marker;
     private Text status;
@@ -56,6 +60,14 @@ public sealed class ArProbe : MonoBehaviour
         camera.backgroundColor = Color.black;
         cameraObject.AddComponent<ARCameraManager>();
         cameraObject.AddComponent<ARCameraBackground>();
+        if (inspectionMode)
+        {
+            occlusion = cameraObject.AddComponent<AROcclusionManager>();
+            occlusion.requestedEnvironmentDepthMode = EnvironmentDepthMode.Best;
+            occlusion.environmentDepthTemporalSmoothingRequested = true;
+            // Depth is used for hit testing; keep the marker visible for inspection.
+            occlusion.requestedOcclusionPreferenceMode = OcclusionPreferenceMode.NoOcclusion;
+        }
         var pose = cameraObject.AddComponent<TrackedPoseDriver>();
         pose.SetPoseSource(TrackedPoseDriver.DeviceType.GenericXRDevice, TrackedPoseDriver.TrackedPose.Center);
         pose.trackingType = TrackedPoseDriver.TrackingType.RotationAndPosition;
@@ -63,7 +75,8 @@ public sealed class ArProbe : MonoBehaviour
         origin.Camera = camera;
         origin.CameraFloorOffsetObject = offset;
         planes = originObject.AddComponent<ARPlaneManager>();
-        planes.requestedDetectionMode = PlaneDetectionMode.Horizontal;
+        planes.requestedDetectionMode = inspectionMode
+            ? PlaneDetectionMode.Horizontal | PlaneDetectionMode.Vertical : PlaneDetectionMode.Horizontal;
         planes.planesChanged += OnPlanesChanged;
         raycasts = originObject.AddComponent<ARRaycastManager>();
         anchors = originObject.AddComponent<ARAnchorManager>();
@@ -104,7 +117,7 @@ public sealed class ArProbe : MonoBehaviour
             || ARSession.state == ARSessionState.SessionTracking)
         {
             session.enabled = true;
-            notice.text = "Move slowly over a well-lit textured table. Tap a detected surface to place a cube.";
+            notice.text = "Move slowly over a well-lit textured surface. Tap a detected floor or wall to place a cube.";
         }
         else
         {
@@ -119,20 +132,38 @@ public sealed class ArProbe : MonoBehaviour
             plane.gameObject.AddComponent<MeshFilter>();
             var renderer = plane.gameObject.AddComponent<MeshRenderer>();
             renderer.sharedMaterial = planeMaterial;
-            plane.gameObject.AddComponent<ARPlaneMeshVisualizer>();
+            if (inspectionMode)
+            {
+                var tint = new MaterialPropertyBlock();
+                tint.SetColor("_Color", new Color(0.1f, 0.8f, 0.35f, 0.08f));
+                renderer.SetPropertyBlock(tint);
+            }
+            var visualizer = plane.gameObject.AddComponent<ARPlaneMeshVisualizer>();
+            visualizer.trackingStateVisibilityThreshold = TrackingState.Tracking;
+            visualizer.hideSubsumed = true;
         }
     }
 
     private void Update()
     {
         int trackedPlanes = 0;
+        int verticalPlanes = 0;
         foreach (var plane in planes.trackables)
+        {
+            // The visualizer owns renderer visibility. Disable it when the whole session loses tracking.
+            var visualizer = plane.GetComponent<ARPlaneMeshVisualizer>();
+            if (visualizer != null) visualizer.enabled = ARSession.state == ARSessionState.SessionTracking && plane.subsumedBy == null;
             if (plane.trackingState == TrackingState.Tracking && plane.alignment == PlaneAlignment.HorizontalUp)
                 trackedPlanes++;
+            if (plane.trackingState == TrackingState.Tracking && plane.alignment == PlaneAlignment.Vertical)
+                verticalPlanes++;
+        }
         status.text = (inspectionMode ? "AR INSPECTION" : "AR DEVICE PROBE") + "\nSession: " + ARSession.state +
                       "\nTracking reason: " + ARSession.notTrackingReason +
-                      "\nHorizontal planes: " + trackedPlanes + "   Placements: " + placements +
+                      "\nHorizontal: " + trackedPlanes + "  Vertical: " + verticalPlanes + "  Placements: " + placements +
+                      (inspectionMode ? "\nDepth: " + DepthState() + "  Hit: " + lastHitSource : "") +
                       (marker ? "\nPosition (m): " + lastPosition.ToString("F2") : "\nMarker: none");
+        if (depthToggle != null) depthToggle.interactable = reportForm == null || !reportForm.PositionLocked;
         if (ARSession.state != ARSessionState.SessionTracking || Input.touchCount == 0) return;
         if (reportForm != null && reportForm.PositionLocked) return;
         var touch = Input.GetTouch(0);
@@ -142,42 +173,89 @@ public sealed class ArProbe : MonoBehaviour
         EventSystem.current.RaycastAll(pointer, uiHits);
         if (uiHits.Count != 0) return;
 
+        if (useDepth && occlusion != null && occlusion.currentEnvironmentDepthMode != EnvironmentDepthMode.Disabled
+            && raycasts.Raycast(touch.position, hits, TrackableType.Depth))
+        {
+            foreach (var hit in hits)
+            {
+                // This is the documented useful range, not a claim of measurement accuracy.
+                if (hit.distance < 0.5f || hit.distance > 5f) continue;
+                var anchorObject = new GameObject("Depth inspection anchor");
+                anchorObject.transform.SetPositionAndRotation(hit.pose.position, hit.pose.rotation);
+                var depthAnchor = anchorObject.AddComponent<ARAnchor>();
+                if (depthAnchor.trackableId == TrackableId.invalidId || depthAnchor.trackingState != TrackingState.Tracking)
+                {
+                    Destroy(anchorObject);
+                    continue;
+                }
+                PlaceMarker(depthAnchor, hit, "Depth");
+                return;
+            }
+        }
+
         if (!raycasts.Raycast(touch.position, hits, TrackableType.PlaneWithinPolygon))
         {
-            notice.text = "No surface at this point. Scan more of the table, then tap inside the green area.";
+            notice.text = "No reliable hit. Move sideways near textured edges; try 0.5-5 m from the wall. Existing marker kept.";
             return;
         }
         foreach (var hit in hits)
         {
             var plane = planes.GetPlane(hit.trackableId);
-            if (plane == null || plane.alignment != PlaneAlignment.HorizontalUp
+            if (plane == null || (plane.alignment != PlaneAlignment.HorizontalUp &&
+                !(inspectionMode && plane.alignment == PlaneAlignment.Vertical))
                 || plane.trackingState != TrackingState.Tracking) continue;
             var newAnchor = anchors.AttachAnchor(plane, hit.pose);
             if (newAnchor == null)
             {
-                notice.text = "Could not attach an AR anchor. Scan the table and try again.";
+                notice.text = "Could not attach an AR anchor. Scan the surface and try again.";
                 return;
             }
-            if (marker == null)
-            {
-                marker = GameObject.CreatePrimitive(PrimitiveType.Cube);
-                marker.name = "10 cm inspection marker";
-                marker.transform.localScale = Vector3.one * 0.1f;
-                marker.GetComponent<Renderer>().sharedMaterial = markerMaterial;
-                Destroy(marker.GetComponent<Collider>());
-            }
-            lastPosition = hit.pose.position;
-            marker.transform.SetParent(newAnchor.transform, false);
-            marker.transform.localPosition = Vector3.up * 0.05f;
-            marker.transform.localRotation = Quaternion.identity;
-            if (markerAnchor != null) Destroy(markerAnchor.gameObject);
-            markerAnchor = newAnchor;
-            placements++;
-            if (reportForm != null) reportForm.MarkPositionSelected();
-            notice.text = "Marker placed. Walk around it: it should stay on the table. UI buttons must not place markers.";
+            PlaceMarker(newAnchor, hit, plane.alignment == PlaneAlignment.Vertical ? "Wall plane" : "Floor plane");
             return;
         }
-        notice.text = "Tap an upward-facing horizontal surface that is being tracked.";
+        notice.text = inspectionMode ? "Tap a tracked floor or wall." : "Tap a tracked upward-facing horizontal surface.";
+    }
+
+    private string DepthState()
+    {
+        if (!useDepth) return "OFF";
+        if (occlusion == null || occlusion.descriptor == null) return "starting";
+        if (occlusion.descriptor.environmentDepthImageSupported == Supported.Unsupported) return "unsupported (planes)";
+        if (occlusion.currentEnvironmentDepthMode == EnvironmentDepthMode.Disabled) return "waiting (planes)";
+        return occlusion.environmentDepthTexture != null ? "ready" : "enabled/no frame";
+    }
+
+    private void ToggleDepth()
+    {
+        if (reportForm != null && reportForm.PositionLocked) return;
+        useDepth = !useDepth;
+        occlusion.requestedEnvironmentDepthMode = useDepth ? EnvironmentDepthMode.Best : EnvironmentDepthMode.Disabled;
+        depthToggle.GetComponentInChildren<Text>().text = useDepth ? "DEPTH AUTO" : "PLANE ONLY";
+        notice.text = useDepth ? "Depth first, planes as fallback. Move sideways to gather depth; plain walls may still fail."
+            : "Plane-only comparison. Scan textured floor/wall edges before tapping.";
+    }
+
+    private void PlaceMarker(ARAnchor newAnchor, ARRaycastHit hit, string source)
+    {
+        if (marker == null)
+        {
+            marker = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            marker.name = "10 cm inspection marker";
+            marker.transform.localScale = Vector3.one * 0.1f;
+            marker.GetComponent<Renderer>().sharedMaterial = markerMaterial;
+            Destroy(marker.GetComponent<Collider>());
+        }
+        lastPosition = hit.pose.position;
+        marker.transform.SetParent(newAnchor.transform, false);
+        marker.transform.localPosition = Vector3.up * 0.05f;
+        marker.transform.localRotation = Quaternion.identity;
+        if (markerAnchor != null) Destroy(markerAnchor.gameObject);
+        markerAnchor = newAnchor;
+        lastHitSource = source;
+        placements++;
+        if (reportForm != null) reportForm.MarkPositionSelected();
+        notice.text = source + " hit at " + hit.distance.ToString("F2") + " m. Check alignment from another angle before reporting.";
+        Debug.Log("ARWORK_PLACED source=" + source + " distance=" + hit.distance.ToString("F2") + " position=" + lastPosition.ToString("F3"));
     }
 
     private void ClearMarker()
@@ -185,8 +263,9 @@ public sealed class ArProbe : MonoBehaviour
         if (reportForm != null && reportForm.PositionLocked) return;
         if (marker != null) Destroy(marker);
         if (markerAnchor != null) Destroy(markerAnchor.gameObject);
+        lastHitSource = "none";
         if (reportForm != null) reportForm.ClearPosition();
-        notice.text = "Marker cleared. Tap a detected table to place it again.";
+        notice.text = "Marker cleared. Tap a detected surface to place it again.";
     }
 
     public Vector3 CurrentPosition => markerAnchor != null ? markerAnchor.transform.position : lastPosition;
@@ -222,9 +301,14 @@ public sealed class ArProbe : MonoBehaviour
         notice.rectTransform.offsetMin = new Vector2(24, 12);
         notice.rectTransform.offsetMax = new Vector2(-24, -235);
         var bottom = Panel(safe, "Buttons", Vector2.zero, new Vector2(1, 0), new Vector2(0.5f, 0), 130);
-        var clear = MakeButton(bottom, "CLEAR MARKER", 0.02f, 0.49f);
+        var clear = MakeButton(bottom, "CLEAR MARKER", 0.02f, inspectionMode ? 0.32f : 0.49f);
         clear.onClick.AddListener(ClearMarker);
-        var exit = MakeButton(bottom, "EXIT APP", 0.51f, 0.98f);
+        if (inspectionMode)
+        {
+            depthToggle = MakeButton(bottom, "DEPTH AUTO", 0.34f, 0.66f);
+            depthToggle.onClick.AddListener(ToggleDepth);
+        }
+        var exit = MakeButton(bottom, "EXIT APP", inspectionMode ? 0.68f : 0.51f, 0.98f);
         exit.onClick.AddListener(() => Application.Quit());
         if (inspectionMode)
         {

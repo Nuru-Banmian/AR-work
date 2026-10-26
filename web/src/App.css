@@ -11,3 +11,5 @@ article { background: white; border: 1px solid #d5dfdb; padding: 24px; border-ra
 article p { white-space: pre-wrap; overflow-wrap: anywhere; } .row { display: flex; justify-content: space-between; gap: 12px; font-size: 14px; }
 .priority { padding: 4px 10px; border-radius: 20px; background: #edf2ef; } .high { color: #9d321e; background: #ffe7df; } .medium { color: #775100; background: #fff2ce; }
 .id { font-size: 12px; color: #566761; font-family: monospace; } dt { font-size: 12px; color: #566761; margin-top: 12px; } dd { margin: 4px 0; overflow-wrap: anywhere; } .empty { padding: 40px; background: white; border-radius: 12px; }
+select { margin-top: 16px; padding: 10px; border: 1px solid #aabbb6; border-radius: 8px; background: white; font: inherit; }
+select:focus-visible { outline: 3px solid #e59932; outline-offset: 3px; }

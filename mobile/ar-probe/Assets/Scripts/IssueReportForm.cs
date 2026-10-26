@@ -15,6 +15,8 @@ public sealed class IssueReportForm : MonoBehaviour
     [Serializable] private sealed class Failure { public ApiError error; }
     [Serializable] private sealed class HealthData { public string status; }
     [Serializable] private sealed class Health { public HealthData data; }
+    [Serializable] private sealed class PendingRequest { public string key, body, server; }
+    private const string PendingPreference = "arwork.pending-report";
 
     public bool PositionLocked { get; private set; }
     private ArProbe probe;
@@ -23,6 +25,8 @@ public sealed class IssueReportForm : MonoBehaviour
     private Button edit, submit, priority, test;
     private bool hasPosition, busy, saved;
     private int priorityIndex = 1;
+    private string requestKey, requestBody, requestAddress;
+    private Vector3 lockedPosition;
     private readonly string[] priorities = { "low", "medium", "high" };
 
     public void Initialize(Transform parent, ArProbe owner)
@@ -54,8 +58,35 @@ public sealed class IssueReportForm : MonoBehaviour
         textRect.anchorMin = Vector2.zero; textRect.anchorMax = new Vector2(1, 0);
         textRect.pivot = new Vector2(0.5f, 0); textRect.sizeDelta = new Vector2(-50, 155);
         textRect.anchoredPosition = new Vector2(0, 10);
-        message.text = "Scan and tap a horizontal surface, then EDIT REPORT. Session coordinates are not persistent world locations.";
+        message.text = "Scan and tap a floor or wall, then EDIT REPORT. Session coordinates are not persistent world locations.";
+        RestorePending();
         RefreshControls();
+    }
+
+    private void RestorePending()
+    {
+        string stored = PlayerPrefs.GetString(PendingPreference, "");
+        if (stored == "") return;
+        try
+        {
+            var pending = JsonUtility.FromJson<PendingRequest>(stored);
+            var draft = JsonUtility.FromJson<CreateIssue>(pending.body);
+            if (string.IsNullOrEmpty(pending.key) || string.IsNullOrEmpty(pending.server) || draft.position == null)
+                throw new ArgumentException("Invalid pending report");
+            requestKey = pending.key; requestBody = pending.body; requestAddress = pending.server;
+            address.text = pending.server; title.text = draft.title; description.text = draft.description;
+            priorityIndex = Array.IndexOf(priorities, draft.priority);
+            if (priorityIndex < 0) throw new ArgumentException("Invalid pending priority");
+            priorityLabel.text = "Priority: " + draft.priority;
+            PositionLocked = hasPosition = true;
+            message.text = "Unconfirmed report restored. SUBMIT retries its original request. Old session marker is not restored.";
+        }
+        catch (Exception exception)
+        {
+            busy = true; PositionLocked = true;
+            message.text = "Pending report could not be restored. Do not create another report; preserve app data for recovery.";
+            Debug.LogException(exception);
+        }
     }
 
     public void MarkPositionSelected() { hasPosition = true; }
@@ -63,16 +94,17 @@ public sealed class IssueReportForm : MonoBehaviour
 
     private void EditOrCancel()
     {
-        if (busy) return;
+        if (busy || (!saved && requestKey != null)) return;
         if (saved)
         {
             saved = false; hasPosition = false; PositionLocked = false;
+            requestKey = requestBody = requestAddress = null;
             title.text = ""; description.text = "";
             message.text = "Scan and select the next position. Previous marker stays in this AR session.";
         }
         else if (PositionLocked) { PositionLocked = false; message.text = "Draft kept. Tap a surface to adjust position."; }
-        else if (!hasPosition) { message.text = "Select a horizontal surface first."; }
-        else { PositionLocked = true; message.text = "Position locked. Enter title, description and priority."; }
+        else if (!hasPosition) { message.text = "Select a floor or wall first."; }
+        else { lockedPosition = probe.CurrentPosition; PositionLocked = true; message.text = "Position locked. Enter title, description and priority."; }
         RefreshControls();
     }
 
@@ -109,16 +141,27 @@ public sealed class IssueReportForm : MonoBehaviour
 
     private IEnumerator Submit()
     {
-        if (busy || saved || !PositionLocked || !hasPosition || !SaveAddress()) yield break;
+        if (busy || saved || !PositionLocked || !hasPosition) yield break;
+        if (requestKey == null && !SaveAddress()) yield break;
         if (string.IsNullOrWhiteSpace(title.text)) { message.text = "Title is required."; yield break; }
-        var point = probe.CurrentPosition;
-        var payload = new CreateIssue { title = title.text.Trim(), description = description.text,
-            priority = priorities[priorityIndex], position = new Position { x = point.x, y = point.y, z = point.z } };
-        busy = true; RefreshControls(); message.text = "Saving issue...";
-        using (var request = new UnityWebRequest(address.text + "/api/issues", "POST"))
+        if (requestKey == null)
         {
-            request.uploadHandler = new UploadHandlerRaw(Encoding.UTF8.GetBytes(JsonUtility.ToJson(payload)));
+            var point = lockedPosition;
+            var payload = new CreateIssue { title = title.text.Trim(), description = description.text,
+                priority = priorities[priorityIndex], position = new Position { x = point.x, y = point.y, z = point.z } };
+            requestKey = Guid.NewGuid().ToString("N");
+            requestBody = JsonUtility.ToJson(payload);
+            requestAddress = address.text;
+            PlayerPrefs.SetString(PendingPreference, JsonUtility.ToJson(new PendingRequest {
+                key = requestKey, body = requestBody, server = requestAddress }));
+            PlayerPrefs.Save();
+        }
+        busy = true; RefreshControls(); message.text = "Saving issue...";
+        using (var request = new UnityWebRequest(requestAddress + "/api/issues", "POST"))
+        {
+            request.uploadHandler = new UploadHandlerRaw(Encoding.UTF8.GetBytes(requestBody));
             request.downloadHandler = new DownloadHandlerBuffer();
+            request.SetRequestHeader("Idempotency-Key", requestKey);
             request.SetRequestHeader("Content-Type", "application/json"); request.timeout = 15;
             yield return request.SendWebRequest();
             if (request.result == UnityWebRequest.Result.Success)
@@ -128,16 +171,17 @@ public sealed class IssueReportForm : MonoBehaviour
                 if (issue != null && !string.IsNullOrEmpty(issue.id))
                 {
                     saved = true; probe.KeepSubmittedMarker();
+                    PlayerPrefs.DeleteKey(PendingPreference); PlayerPrefs.Save();
                     message.text = "Saved ID: " + issue.id + "\n" + issue.title + " | " + issue.priority + " | " + issue.status;
                     Debug.Log("ARWORK_SAVED_ID=" + issue.id);
                 }
-                else message.text = "Invalid server response. Draft kept; check list before retrying.";
+                else message.text = "Result uncertain. Draft and request kept. SUBMIT retries the same report safely.";
             }
             else
             {
                 string detail = request.error;
                 try { detail = JsonUtility.FromJson<Failure>(request.downloadHandler.text)?.error?.message ?? detail; } catch (ArgumentException) { }
-                message.text = "Save failed: " + detail + ". Draft kept. Check list before retrying if result is uncertain.";
+                message.text = "Save failed: " + detail + ". Draft and request kept. SUBMIT retries the same report; editing stays locked.";
             }
         }
         busy = false; RefreshControls();
@@ -145,11 +189,13 @@ public sealed class IssueReportForm : MonoBehaviour
 
     private void RefreshControls()
     {
-        address.interactable = !busy;
-        title.interactable = description.interactable = priority.interactable = PositionLocked && !busy && !saved;
+        bool pending = requestKey != null && !saved;
+        address.interactable = !busy && !pending;
+        title.interactable = description.interactable = priority.interactable = PositionLocked && !busy && !saved && !pending;
         submit.interactable = PositionLocked && !busy && !saved;
-        test.interactable = edit.interactable = !busy;
-        editLabel.text = saved ? "NEW ISSUE" : PositionLocked ? "BACK TO POINT" : "EDIT REPORT";
+        test.interactable = !busy;
+        edit.interactable = !busy && !pending;
+        editLabel.text = saved ? "NEW ISSUE" : pending ? "RETRY SUBMIT" : PositionLocked ? "BACK TO POINT" : "EDIT REPORT";
     }
 
     private static Text Label(Transform parent, int size)

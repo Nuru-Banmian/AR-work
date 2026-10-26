@@ -12,13 +12,16 @@ import (
 	"testing"
 )
 
-func request(t *testing.T, base, method, path, body string) (*http.Response, map[string]json.RawMessage) {
+func request(t *testing.T, base, method, path, body string, key ...string) (*http.Response, map[string]json.RawMessage) {
 	t.Helper()
 	req, err := http.NewRequest(method, base+path, bytes.NewBufferString(body))
 	if err != nil {
 		t.Fatal(err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if len(key) > 0 {
+		req.Header.Set("Idempotency-Key", key[0])
+	}
 	req.Header.Set("Origin", "http://localhost:5173")
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -102,7 +105,7 @@ func TestHealthAndBrowserPreflight(t *testing.T) {
 		t.Fatal(err)
 	}
 	preflight.Body.Close()
-	if preflight.StatusCode != 204 || preflight.Header.Get("Access-Control-Allow-Origin") != "http://localhost:5173" || !strings.Contains(preflight.Header.Get("Access-Control-Allow-Methods"), "POST") || preflight.Header.Get("Access-Control-Allow-Headers") != "Content-Type" {
+	if preflight.StatusCode != 204 || preflight.Header.Get("Access-Control-Allow-Origin") != "http://localhost:5173" || !strings.Contains(preflight.Header.Get("Access-Control-Allow-Methods"), "POST") || !strings.Contains(preflight.Header.Get("Access-Control-Allow-Methods"), "PATCH") || !strings.Contains(preflight.Header.Get("Access-Control-Allow-Headers"), "Content-Type") || !strings.Contains(preflight.Header.Get("Access-Control-Allow-Headers"), "Idempotency-Key") {
 		t.Fatalf("preflight rejected: %+v", preflight)
 	}
 	req.Header.Set("Origin", "http://untrusted.example")
