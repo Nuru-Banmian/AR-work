@@ -122,6 +122,7 @@ public sealed class IssueLiveUpdates : MonoBehaviour
             if (connection.Done || connection.SilenceSeconds > 25)
             {
                 StopConnection(); reconnectAt = Time.realtimeSinceStartup + 2f;
+                Refresh(); // An SSE-only failure may still permit HTTP; reconcile before declaring offline.
                 SetState("连接中断，正在重连，可手动刷新");
             }
         }
@@ -153,7 +154,7 @@ public sealed class IssueLiveUpdates : MonoBehaviour
                     }
                     catch (ArgumentException) { }
                 }
-                if (!applied) { dirty = true; retryAt = Time.realtimeSinceStartup + 2f; SetState("同步未完成，正在重试，草稿已保留"); }
+                if (!applied) { history.MarkSyncUnavailable(address); dirty = true; retryAt = Time.realtimeSinceStartup + 2f; SetState("同步未完成，旧状态请核对最近同步时间，正在重试"); }
             }
         }
         fetching = false;

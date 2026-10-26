@@ -47,6 +47,33 @@ public sealed class IssueHistoryPanel : MonoBehaviour
     // A draft remains attached to its server and ID when navigating or retrying.
     private readonly Dictionary<string, Content> drafts = new Dictionary<string, Content>();
     private IssuePhotoView photoView;
+    private Issue[] remoteRows = new Issue[0];
+    private bool online;
+    private Issue displayedIssue;
+    private readonly Dictionary<string, string> syncTimes = new Dictionary<string, string>();
+    private string SyncKey => server + "/" + (selectedId ?? "");
+    private string SyncTime => server != null && syncTimes.TryGetValue(SyncKey, out var time) ? InspectionUi.Time(time) : "尚未同步";
+
+    public void MarkSyncUnavailable(string address)
+    {
+        if (address != server) return;
+        online = false;
+        if (detailLoaded) RenderMetadata();
+        if (!busy) SetBusy(false);
+    }
+
+    private void MarkSynced()
+    {
+        online = true; syncTimes[SyncKey] = DateTimeOffset.UtcNow.ToString("O");
+    }
+
+    private void RenderMetadata()
+    {
+        if (displayedIssue == null) return;
+        metadata.text = "状态：" + InspectionUi.Status(displayedIssue.status) + "\n创建：" + InspectionUi.Time(displayedIssue.createdAt) +
+            "  更新：" + InspectionUi.Time(displayedIssue.updatedAt) + "\n编号：" + displayedIssue.id +
+            "\n最近同步：" + SyncTime + (online ? "" : "（离线或同步失败，旧状态）");
+    }
 
     public void Initialize(Transform parent, ArProbe owner, Action returnToReport)
     {
@@ -132,8 +159,9 @@ public sealed class IssueHistoryPanel : MonoBehaviour
         if (Busy) return;
         CancelLoad(); KeepDraft();
         bool changedServer = server != address;
-        server = address; selectedId = null; detailLoaded = false;
-        if (changedServer) foreach (Transform child in rows) { child.gameObject.SetActive(false); Destroy(child.gameObject); }
+        server = address; selectedId = null; detailLoaded = false; online = false;
+        if (changedServer) remoteRows = new Issue[0];
+        RenderList(remoteRows);
         panel.SetActive(true); ShowPage(); BeginLoad();
     }
 
@@ -171,8 +199,8 @@ public sealed class IssueHistoryPanel : MonoBehaviour
     {
         busy = value;
         close.interactable = back.interactable = refresh.interactable = !value;
-        save.interactable = priority.interactable = title.interactable = description.interactable = !value && detailLoaded;
-        remark.interactable = !value && detailLoaded;
+        save.interactable = priority.interactable = title.interactable = description.interactable = !value && detailLoaded && online;
+        remark.interactable = !value && detailLoaded && online;
         cancelRemark.interactable = !value;
         confirmRemark.interactable = !value && hasRemarkPosition;
         foreach (var button in rows.GetComponentsInChildren<Button>()) button.interactable = !value;
@@ -201,7 +229,10 @@ public sealed class IssueHistoryPanel : MonoBehaviour
             loadRequest = request;
             request.timeout = 15;
             yield return request.SendWebRequest();
-            if (request.result != UnityWebRequest.Result.Success) message.text = InspectionUi.Error(request) + "草稿已保留，可点击刷新重试。";
+            if (request.result != UnityWebRequest.Result.Success) {
+                MarkSyncUnavailable(server);
+                message.text = InspectionUi.Error(request) + "已同步记录只读，旧状态截至 " + SyncTime + "。本地记录仍可查看，可点击刷新重试。";
+            }
             else
             {
                 try
@@ -210,18 +241,20 @@ public sealed class IssueHistoryPanel : MonoBehaviour
                     {
                         var issues = JsonUtility.FromJson<IssueList>(request.downloadHandler.text)?.data;
                         if (issues == null) throw new ArgumentException("Missing issue list");
+                        MarkSynced();
                         RenderList(issues);
-                        message.text = issues.Length == 0 ? "暂无问题，点击新增问题开始记录。" : "共 " + issues.Length + " 个问题，点击查看详情。";
+                        message.text = issues.Length == 0 ? "暂无服务器问题，本地记录见列表。" : "共 " + issues.Length + " 个问题，点击查看详情。";
                     }
                     else
                     {
                         var issue = JsonUtility.FromJson<IssueResult>(request.downloadHandler.text)?.data;
                         RequireIssue(issue);
+                        MarkSynced();
                         RenderDetail(issue);
                         message.text = drafts.ContainsKey(DraftKey) ? "状态已更新，未保存的内容已保留。" : "可修改内容或重新标记。";
                     }
                 }
-                catch (ArgumentException) { message.text = "返回数据异常，草稿已保留，请刷新重试。"; }
+                catch (ArgumentException) { MarkSyncUnavailable(server); message.text = "返回数据异常，已同步记录只读，草稿已保留，请刷新重试。"; }
             }
         }
         loadRequest = null; loading = false; SetBusy(false);
@@ -230,27 +263,41 @@ public sealed class IssueHistoryPanel : MonoBehaviour
     private void RenderList(Issue[] issues)
     {
         foreach (Transform child in rows) { child.gameObject.SetActive(false); Destroy(child.gameObject); }
+        remoteRows = issues;
+        GetComponent<LocalReports>()?.RenderRows(rows, issues);
         foreach (var issue in issues)
         {
             if (issue == null || string.IsNullOrEmpty(issue.id)) throw new ArgumentException("Invalid issue");
-            var button = IssueReportForm.ButtonAt(rows, issue.title + "\n" + InspectionUi.Priority(issue.priority) + "优先级 · " + InspectionUi.Status(issue.status) + "\n" + (string.IsNullOrEmpty(issue.snapshotUrl) ? "无快照" : "有现场快照") + " · 已同步", 0, 0, 1, () => {
+            var button = IssueReportForm.ButtonAt(rows, issue.title + "\n" + InspectionUi.Priority(issue.priority) + "优先级 · " + InspectionUi.Status(issue.status) + "\n已同步 · 最近同步：" + SyncTime, 0, 0, 1, () => {
                 selectedId = issue.id; detailLoaded = false; title.SetTextWithoutNotify(""); description.SetTextWithoutNotify("");
                 priorityIndex = 1; priorityLabel.text = "优先级：中"; metadata.text = "正在加载…";
                 ShowPage(); BeginLoad();
             });
             button.gameObject.AddComponent<LayoutElement>().preferredHeight = 155;
+            button.gameObject.AddComponent<IssueListPhoto>().Initialize(button, string.IsNullOrEmpty(issue.snapshotUrl) ? null :
+                server + "/api/issues/" + Uri.EscapeDataString(issue.id) + "/snapshot?v=" + Uri.EscapeDataString(issue.updatedAt ?? ""));
         }
         listPage.GetComponent<ScrollRect>().verticalNormalizedPosition = 1;
+    }
+
+    public void RefreshLocalRows()
+    {
+        if (panel == null || !panel.activeSelf || selectedId != null) return;
+        float scroll = listPage.GetComponent<ScrollRect>().verticalNormalizedPosition;
+        RenderList(remoteRows);
+        listPage.GetComponent<ScrollRect>().verticalNormalizedPosition = scroll;
+        foreach (var button in rows.GetComponentsInChildren<Button>()) button.interactable = !busy;
     }
 
     public void ApplyLiveIssues(string address, Issue[] issues)
     {
         if (address != server || !IsOpen || busy) return;
         KeepDraft();
+        MarkSynced();
         if (selectedId == null)
         {
             RenderList(issues);
-            message.text = issues.Length == 0 ? "暂无问题，点击新增问题开始记录。" : "共 " + issues.Length + " 个问题，点击查看详情。";
+            message.text = issues.Length == 0 ? "暂无服务器问题，本地记录见列表。" : "共 " + issues.Length + " 个问题，点击查看详情。";
         }
         else foreach (var issue in issues)
         {
@@ -272,8 +319,7 @@ public sealed class IssueHistoryPanel : MonoBehaviour
     private void RenderDetail(Issue issue)
     {
         photoView.Show(server, issue.id, issue.snapshotUrl, issue.updatedAt);
-        metadata.text = "状态：" + InspectionUi.Status(issue.status) + "\n创建：" + InspectionUi.Time(issue.createdAt) +
-            "  更新：" + InspectionUi.Time(issue.updatedAt) + "\n编号：" + issue.id;
+        displayedIssue = issue; RenderMetadata();
         loadedContent = new Content { title = issue.title, description = issue.description, priority = issue.priority };
         var content = drafts.TryGetValue(DraftKey, out var draft) ? draft : loadedContent;
         title.SetTextWithoutNotify(content.title); description.SetTextWithoutNotify(content.description);
@@ -284,7 +330,7 @@ public sealed class IssueHistoryPanel : MonoBehaviour
 
     private IEnumerator Save()
     {
-        if (busy || selectedId == null || !detailLoaded) yield break;
+        if (busy || selectedId == null || !detailLoaded || !online) yield break;
         KeepDraft();
         if (string.IsNullOrWhiteSpace(title.text)) { message.text = "请填写标题，其他内容已保留。"; yield break; }
         var body = JsonUtility.ToJson(new Content { title = title.text, description = description.text, priority = priorities[priorityIndex] });
@@ -295,13 +341,16 @@ public sealed class IssueHistoryPanel : MonoBehaviour
             request.downloadHandler = new DownloadHandlerBuffer();
             request.SetRequestHeader("Content-Type", "application/json"); request.timeout = 15;
             yield return request.SendWebRequest();
-            if (request.result != UnityWebRequest.Result.Success) message.text = InspectionUi.Error(request) + "草稿已保留，可再次保存。";
+            if (request.result != UnityWebRequest.Result.Success) {
+                MarkSyncUnavailable(server);
+                message.text = InspectionUi.Error(request) + "结果待确认，草稿已保留。当前只读，请刷新核对后重试。";
+            }
             else
             {
                 try
                 {
                     var issue = JsonUtility.FromJson<IssueResult>(request.downloadHandler.text)?.data;
-                    RequireIssue(issue); drafts.Remove(DraftKey); RenderDetail(issue);
+                    RequireIssue(issue); MarkSynced(); drafts.Remove(DraftKey); RenderDetail(issue);
                     message.text = "内容已保存 · " + InspectionUi.Status(issue.status);
                     Debug.Log("ARWORK_CONTENT_SAVED_ID=" + issue.id);
                 }
@@ -313,7 +362,7 @@ public sealed class IssueHistoryPanel : MonoBehaviour
 
     private void BeginRemark()
     {
-        if (busy || !detailLoaded || selectedId == null) return;
+        if (busy || !detailLoaded || selectedId == null || !online) return;
         KeepDraft(); probe.BeginRemark(); probe.EnterCamera(); hasRemarkPosition = false; snapshotReady = false; IsRemarking = true;
         GetComponent<IssueReportForm>().ShowRemarkNavigation(true);
         panel.SetActive(false); remarkPanel.SetActive(true); SetBusy(false);
