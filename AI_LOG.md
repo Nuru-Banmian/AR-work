@@ -728,3 +728,26 @@
 - 保护已有 AGENTS.md、CONTEXT.md、docs/agents 和 AI_LOG 规格发布段落，不纳入本次提交；Unity 构建生成的无业务变化已恢复。现场截图、APK、工具和隔离验收数据保留在忽略目录。证据与边界见 docs/issue-4-acceptance.md。
 
 本次未实现重新标记、SSE、状态颜色或交付视频；未推送远程。
+
+## Issue #5 历史问题重新标记（2026-10-26）
+
+- 用户调用 implement #5，确认真实 HTTP API 测试边界及审查起点 d9e59fd；并协助真机解锁、竖直面及重启后扫描。
+- 实现独立 PATCH /position，只原子修改 position/updatedAt，保留最新内容和管理状态。Unity 从历史详情进入新选点，失败保持替代草稿，取消清理草稿，确认成功才替换同一服务器和 ID 的旧会话标记；历史坐标不渲染到新会话。
+- 首个位置 HTTP 测试先 404 后通过；新增 3 项真实 HTTP 行为测试，覆盖字段保护、重启、幂等原回执、校验、落盘失败及三类字段并发修改。最终全套 15 项顶层测试和既有 9 项非法创建子用例通过，go vet、前端严格 TypeScript/Vite 构建、Oxlint 通过。
+- 最终 Android ARM64/IL2CPP APK 构建及真机覆盖安装成功，18,024,066 字节，SHA-256 69dd02c59130ed60129372391df7002ef76cb68aa3c9e698819713fa99606876；ZIP CRC、7 库 16 KB 对齐、apksigner v2 验证通过。
+- 真机和真实网页使用隔离 Go :18086、.local/issue5-acceptance.json。相同 ID 07b5a9556b681d15a966d35695095a9b 通过水平面和竖直面重新标记；真实 500 后原记录不变，取消仅丢弃草稿。选点后网页改 resolved，再手机保存，状态保留且网页显示新坐标。
+- 同一墙面可见旧标记和替代草稿；取消后只剩旧标记，成功后旧标记移除只剩新标记。Go 和手机均重启后数据保留且没有历史方块恢复；新会话重新扫描、Depth 选点并保存同一 ID 成功，网页刷新显示新坐标。
+- code-review 两个独立只读代理分别审查 Standards 和 Spec。修复创建重试回执误删较新标记、暂存新建草稿未隐藏两项 P2；复核均无剩余发现。详情见 docs/issue-5-acceptance.md。
+- 保留用户已有 AGENTS.md、CONTEXT.md、docs/agents 及 AI_LOG 规格段落，只暂存本次 AI_LOG 追加。Unity 自动生成的无业务变化已恢复。未推送远程，未实现 SSE、状态颜色或视频；不声称精度及生产可用性。
+
+## Issue #6 SSE、中文化与低负载调整（2026-10-26）
+
+- 用户调用 implement #6，确认真实 HTTP API 测试边界及 bd03d698 审查起点；实施期间追加扫描退出排查、全部汉化和删减无必要按钮/信息。
+- Go 成功保存后广播 SSE 失效通知，React/Unity 重新查询；失败和幂等重放不广播。客户端断线重连，Unity 回前台重新查询，保留内容草稿；仅给当前会话已有标记按状态变色，保留手动刷新。
+- 首个 SSE 测试先 404 后通过；新增 5 项 HTTP 行为测试。完整后端 20 项顶层测试及既有 9 个非法输入子用例、Go vet、前端严格 TypeScript/Vite 构建和 Oxlint 通过。
+- 实际网页和小米 13 Pro 使用隔离 Go :18087、.local/issue6-acceptance.json。验证四类更新、草稿保留、Go 重启、网络恢复；汉化包阶段同一手机问题 2cfe7a985b43cbab269c00a496d8eb96 的标记随网页状态变橙/蓝/绿。
+- 真机复测捕获 Unity 原生 SSE 下载器暂停超时，调整 Dispose 顺序仍复现。最终改为后台 HttpClient 读取/取消，主线程消费原子标志；旧包暂停脚本 FAIL，最终包 5 次 PASS，包含开启深度及服务重启场景。回前台读到后台期间保存的中文内容/优先级，后台手机连接关闭后前台重新建立。
+- 全中文按钮、提示、状态和优先级，内置带 OFL 许可的静态中文字体；移除清除/退出按钮、平面计数/命中等诊断显示。Android 历史存在 LOW_MEMORY，默认 30 FPS、关闭深度子系统，可手动启用；不将其视为所有扫描退出根因或长期稳定性证明。18:47:14 最近一次用户反馈对应 PACKAGE UPDATED，是覆盖安装中断。
+- 最终 Android ARM64/IL2CPP APK 27,819,636 字节，SHA-256 2b46695e2b22492d8dbfd0279214b82ca793946759e4cbf4785dc7d626784f0c；ZIP CRC、7 库 16 KB 对齐、apksigner v2 验证及真机安装通过。颜色在网络读取切换前验证，切换后复测实时数据和生命周期，未重新扫描创建标记。
+- code-review 两个独立只读代理审查 Standards/Spec 并复核增量；修正取消位置的误导保证和英文 JSON 解析异常，最终无剩余代码发现。证据和限制见 docs/issue-6-acceptance.md。
+- 保留用户原有 AGENTS.md、CONTEXT.md、docs/agents 及 AI_LOG 规格发布段落；只暂存本次追加日志。Unity 无业务生成变动已恢复，APK/截图/临时运行数据不提交；未推送远程，未录制交付视频。

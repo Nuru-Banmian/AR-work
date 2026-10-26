@@ -36,11 +36,12 @@ type Issue struct {
 }
 
 type api struct {
-	mu       sync.Mutex
-	path     string
-	issues   []Issue
-	origins  map[string]bool
-	requests map[string]creation
+	mu          sync.Mutex
+	path        string
+	issues      []Issue
+	origins     map[string]bool
+	requests    map[string]creation
+	subscribers map[chan struct{}]bool
 }
 
 // The original result is retained even when the issue's status changes later.
@@ -55,7 +56,7 @@ type snapshot struct {
 }
 
 func newAPI(path, allowedOrigins string) (http.Handler, error) {
-	a := &api{path: path, issues: []Issue{}, origins: map[string]bool{}, requests: map[string]creation{}}
+	a := &api{path: path, issues: []Issue{}, origins: map[string]bool{}, requests: map[string]creation{}, subscribers: map[chan struct{}]bool{}}
 	for _, origin := range strings.Split(allowedOrigins, ",") {
 		a.origins[strings.TrimSpace(origin)] = true
 	}
@@ -111,6 +112,8 @@ func (a *api) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch r.URL.Path {
+	case "/api/events":
+		a.events(w, r)
 	case "/health":
 		if r.Method != "GET" {
 			fail(w, 405, "method_not_allowed", "Use GET")
@@ -149,12 +152,13 @@ func (a *api) issue(w http.ResponseWriter, r *http.Request) {
 	detail := len(parts) == 1 && parts[0] != ""
 	status := len(parts) == 2 && parts[0] != "" && parts[1] == "status"
 	content := len(parts) == 2 && parts[0] != "" && parts[1] == "content"
-	if !detail && !status && !content {
+	position := len(parts) == 2 && parts[0] != "" && parts[1] == "position"
+	if !detail && !status && !content && !position {
 		fail(w, 404, "not_found", "Endpoint not found")
 		return
 	}
-	if (detail && r.Method != "GET") || ((status || content) && r.Method != "PATCH") {
-		fail(w, 405, "method_not_allowed", "Use GET for details or PATCH for status/content")
+	if (detail && r.Method != "GET") || ((status || content || position) && r.Method != "PATCH") {
+		fail(w, 405, "method_not_allowed", "Use GET for details or PATCH for status/content/position")
 		return
 	}
 	var input struct {
@@ -201,15 +205,42 @@ func (a *api) issue(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	var location struct {
+		Position *struct{ X, Y, Z *float64 } `json:"position"`
+	}
+	if position {
+		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64*1024))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&location); err != nil {
+			fail(w, 400, "invalid_argument", "Body must contain position{x,y,z} only")
+			return
+		}
+		if err := decoder.Decode(new(any)); err != io.EOF {
+			fail(w, 400, "invalid_argument", "Body must contain one JSON object")
+			return
+		}
+		if location.Position == nil || location.Position.X == nil || location.Position.Y == nil || location.Position.Z == nil {
+			fail(w, 400, "invalid_argument", "position.x, position.y and position.z are required finite numbers")
+			return
+		}
+		for _, number := range []*float64{location.Position.X, location.Position.Y, location.Position.Z} {
+			if math.IsNaN(*number) || math.IsInf(*number, 0) {
+				fail(w, 400, "invalid_argument", "position coordinates must be finite numbers")
+				return
+			}
+		}
+	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	for index, issue := range a.issues {
 		if issue.ID != parts[0] {
 			continue
 		}
-		if status || content {
+		if status || content || position {
 			if status {
 				issue.Status = input.Status
+			} else if position {
+				issue.Position = Position{*location.Position.X, *location.Position.Y, *location.Position.Z}
 			} else {
 				issue.Title = strings.TrimSpace(*edit.Title)
 				issue.Description = *edit.Description
@@ -224,6 +255,7 @@ func (a *api) issue(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			a.issues = next
+			a.notifySaved()
 		}
 		respond(w, 200, map[string]any{"data": issue})
 		return
@@ -319,6 +351,7 @@ func (a *api) create(w http.ResponseWriter, r *http.Request) {
 	}
 	a.issues = next
 	a.requests = nextRequests
+	a.notifySaved()
 	respond(w, 201, map[string]any{"data": issue})
 }
 

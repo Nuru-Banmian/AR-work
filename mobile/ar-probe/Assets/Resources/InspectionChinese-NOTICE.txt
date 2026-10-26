@@ -1,0 +1,10 @@
+Inspection Chinese is a static regular-weight subset derived from Noto Sans CJK SC.
+Source font: /system/fonts/NotoSansCJK-Regular.ttc on the connected Xiaomi 13 Pro.
+Upstream: https://github.com/notofonts/noto-cjk
+License: Assets/Resources/NotoSans-LICENSE.txt (SIL Open Font License 1.1).
+
+Includes Basic Latin, Latin Extended, CJK unified ideographs and Extension A,
+Chinese/full-width punctuation. Renamed Inspection Chinese and instantiated at
+weight 400 for Unity 2022.3 compatibility. Unused glyphs and variable weights
+are omitted to avoid embedding the full 32 MB system collection. Imported as a
+dynamic font. Rare supplementary CJK characters outside these ranges are omitted.

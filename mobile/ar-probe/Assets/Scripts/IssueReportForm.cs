@@ -11,16 +11,15 @@ public sealed class IssueReportForm : MonoBehaviour
     [Serializable] private sealed class CreateIssue { public string title, description, priority; public Position position; }
     [Serializable] private sealed class SavedIssue { public string id, title, priority, status; }
     [Serializable] private sealed class Success { public SavedIssue data; }
-    [Serializable] private sealed class ApiError { public string code, message; }
-    [Serializable] private sealed class Failure { public ApiError error; }
     [Serializable] private sealed class HealthData { public string status; }
     [Serializable] private sealed class Health { public HealthData data; }
     [Serializable] private sealed class PendingRequest { public string key, body, server; }
     private const string PendingPreference = "arwork.pending-report";
 
     private bool positionLocked;
-    public bool PositionLocked { get => positionLocked || (history != null && history.IsOpen); private set => positionLocked = value; }
+    public bool PositionLocked { get => history != null && history.IsRemarking ? history.RemarkLocked : positionLocked || (history != null && history.IsOpen); private set => positionLocked = value; }
     private IssueHistoryPanel history;
+    private IssueLiveUpdates live;
     private ArProbe probe;
     private InputField address, title, description;
     private Text message, priorityLabel, editLabel;
@@ -42,33 +41,36 @@ public sealed class IssueReportForm : MonoBehaviour
         rect.pivot = new Vector2(0.5f, 0); rect.sizeDelta = new Vector2(0, 795);
         rect.anchoredPosition = new Vector2(0, 130);
         history = gameObject.AddComponent<IssueHistoryPanel>();
-        history.Initialize(parent, () => panel.SetActive(true));
-        historyButton = ButtonAt(rect, "ALL ISSUES", 725, 0.03f, 0.97f, () => {
+        history.Initialize(parent, probe, () => panel.SetActive(true));
+        live = gameObject.AddComponent<IssueLiveUpdates>();
+        live.Initialize(parent, probe, history);
+        historyButton = ButtonAt(rect, "问题列表", 725, 0.03f, 0.97f, () => {
             if (busy || !SaveAddress()) return;
             panel.SetActive(false);
             history.Open(address.text);
         });
-        address = Field(rect, "Server URL (http://PC-IP:8080)", 650, 60, false);
+        address = Field(rect, "服务地址，如 http://电脑IP:8080", 650, 60, false);
         address.text = PlayerPrefs.GetString("arwork.server", "http://192.168.1.100:8080");
         address.onEndEdit.AddListener(value => SaveAddress());
-        test = ButtonAt(rect, "TEST CONNECTION", 575, 0.03f, 0.97f, () => StartCoroutine(TestConnection()));
-        title = Field(rect, "Title (required)", 500, 65, false);
-        description = Field(rect, "Description (optional)", 385, 100, true);
-        priority = ButtonAt(rect, "Priority: medium", 310, 0.03f, 0.48f, () => {
+        test = ButtonAt(rect, "测试连接", 575, 0.03f, 0.97f, () => StartCoroutine(TestConnection()));
+        title = Field(rect, "问题标题（必填）", 500, 65, false);
+        description = Field(rect, "补充描述（选填）", 385, 100, true);
+        priority = ButtonAt(rect, "优先级：中", 310, 0.03f, 0.48f, () => {
             priorityIndex = (priorityIndex + 1) % priorities.Length;
-            priorityLabel.text = "Priority: " + priorities[priorityIndex];
+            priorityLabel.text = "优先级：" + InspectionUi.Priority(priorities[priorityIndex]);
         });
         priorityLabel = priority.GetComponentInChildren<Text>();
-        edit = ButtonAt(rect, "EDIT REPORT", 310, 0.52f, 0.97f, EditOrCancel);
+        edit = ButtonAt(rect, "填写问题", 310, 0.52f, 0.97f, EditOrCancel);
         editLabel = edit.GetComponentInChildren<Text>();
-        submit = ButtonAt(rect, "SUBMIT ISSUE", 235, 0.03f, 0.97f, () => StartCoroutine(Submit()));
+        submit = ButtonAt(rect, "提交问题", 235, 0.03f, 0.97f, () => StartCoroutine(Submit()));
         message = Label(rect, 27);
         var textRect = message.rectTransform;
         textRect.anchorMin = Vector2.zero; textRect.anchorMax = new Vector2(1, 0);
         textRect.pivot = new Vector2(0.5f, 0); textRect.sizeDelta = new Vector2(-50, 155);
         textRect.anchoredPosition = new Vector2(0, 10);
-        message.text = "Scan and tap a floor or wall, then EDIT REPORT. Session coordinates are not persistent world locations.";
+        message.text = "先点击地面或墙面选点，再填写问题。";
         RestorePending();
+        SaveAddress();
         RefreshControls();
     }
 
@@ -86,20 +88,20 @@ public sealed class IssueReportForm : MonoBehaviour
             address.text = pending.server; title.text = draft.title; description.text = draft.description;
             priorityIndex = Array.IndexOf(priorities, draft.priority);
             if (priorityIndex < 0) throw new ArgumentException("Invalid pending priority");
-            priorityLabel.text = "Priority: " + draft.priority;
+            priorityLabel.text = "优先级：" + InspectionUi.Priority(draft.priority);
             PositionLocked = hasPosition = true;
-            message.text = "Unconfirmed report restored. SUBMIT retries its original request. Old session marker is not restored.";
+            message.text = "有待确认的上报，请点击提交重试，不会重复创建。";
         }
         catch (Exception exception)
         {
             busy = true; PositionLocked = true;
-            message.text = "Pending report could not be restored. Do not create another report; preserve app data for recovery.";
+            message.text = "待确认上报无法恢复，请保留应用数据并联系维护人员。";
             Debug.LogException(exception);
         }
     }
 
-    public void MarkPositionSelected() { hasPosition = true; }
-    public void ClearPosition() { hasPosition = false; RefreshControls(); }
+    public void MarkPositionSelected() { if (history != null && history.IsRemarking) history.MarkPositionSelected(); else hasPosition = true; }
+    public void ClearPosition() { if (history != null && history.IsRemarking) history.ClearPosition(); else { hasPosition = false; RefreshControls(); } }
 
     private void EditOrCancel()
     {
@@ -109,11 +111,11 @@ public sealed class IssueReportForm : MonoBehaviour
             saved = false; hasPosition = false; PositionLocked = false;
             requestKey = requestBody = requestAddress = null;
             title.text = ""; description.text = "";
-            message.text = "Scan and select the next position. Previous marker stays in this AR session.";
+            message.text = "请选取下一个位置。已提交的标记会保留。";
         }
-        else if (PositionLocked) { PositionLocked = false; message.text = "Draft kept. Tap a surface to adjust position."; }
-        else if (!hasPosition) { message.text = "Select a floor or wall first."; }
-        else { lockedPosition = probe.CurrentPosition; PositionLocked = true; message.text = "Position locked. Enter title, description and priority."; }
+        else if (PositionLocked) { PositionLocked = false; message.text = "内容已保留，请点击表面调整位置。"; }
+        else if (!hasPosition) { message.text = "请先点击地面或墙面选点。"; }
+        else { lockedPosition = probe.CurrentPosition; PositionLocked = true; message.text = "位置已确认，请填写问题。"; }
         RefreshControls();
     }
 
@@ -123,16 +125,18 @@ public sealed class IssueReportForm : MonoBehaviour
         if (!Uri.TryCreate(value, UriKind.Absolute, out var uri) ||
             (uri.Scheme != "http" && uri.Scheme != "https") || uri.AbsolutePath != "/" ||
             !string.IsNullOrEmpty(uri.Query) || !string.IsNullOrEmpty(uri.Fragment) || !string.IsNullOrEmpty(uri.UserInfo))
-        { message.text = "Invalid server URL. Use http://PC-LAN-IP:8080 (not phone localhost)."; return false; }
+        { message.text = "地址格式有误，请填写 http://电脑局域网IP:8080。"; return false; }
         address.text = value;
         PlayerPrefs.SetString("arwork.server", value); PlayerPrefs.Save();
+        live.SetServer(value);
         return true;
     }
 
     private IEnumerator TestConnection()
     {
         if (busy || !SaveAddress()) yield break;
-        busy = true; RefreshControls(); message.text = "Testing connection...";
+        live.Refresh();
+        busy = true; RefreshControls(); message.text = "正在测试连接…";
         using (var request = UnityWebRequest.Get(address.text + "/health"))
         {
             request.timeout = 10;
@@ -143,7 +147,7 @@ public sealed class IssueReportForm : MonoBehaviour
                 try { healthy = JsonUtility.FromJson<Health>(request.downloadHandler.text)?.data?.status == "ok"; } catch (ArgumentException) { }
             }
             message.text = healthy
-                ? "Connection successful." : "Connection failed: " + request.error + ". Check address, Wi-Fi and firewall.";
+                ? "连接成功。" : "连接失败，请检查服务地址、网络和电脑防火墙。";
         }
         busy = false; RefreshControls();
     }
@@ -152,7 +156,7 @@ public sealed class IssueReportForm : MonoBehaviour
     {
         if (busy || saved || !PositionLocked || !hasPosition) yield break;
         if (requestKey == null && !SaveAddress()) yield break;
-        if (string.IsNullOrWhiteSpace(title.text)) { message.text = "Title is required."; yield break; }
+        if (string.IsNullOrWhiteSpace(title.text)) { message.text = "请填写问题标题。"; yield break; }
         if (requestKey == null)
         {
             var point = lockedPosition;
@@ -165,7 +169,7 @@ public sealed class IssueReportForm : MonoBehaviour
                 key = requestKey, body = requestBody, server = requestAddress }));
             PlayerPrefs.Save();
         }
-        busy = true; RefreshControls(); message.text = "Saving issue...";
+        busy = true; RefreshControls(); message.text = "正在提交…";
         using (var request = new UnityWebRequest(requestAddress + "/api/issues", "POST"))
         {
             request.uploadHandler = new UploadHandlerRaw(Encoding.UTF8.GetBytes(requestBody));
@@ -179,18 +183,17 @@ public sealed class IssueReportForm : MonoBehaviour
                 try { issue = JsonUtility.FromJson<Success>(request.downloadHandler.text)?.data; } catch (ArgumentException) { }
                 if (issue != null && !string.IsNullOrEmpty(issue.id))
                 {
-                    saved = true; probe.KeepSubmittedMarker();
+                    saved = true; probe.KeepSubmittedMarker(requestAddress, issue.id);
+                    live.Refresh();
                     PlayerPrefs.DeleteKey(PendingPreference); PlayerPrefs.Save();
-                    message.text = "Saved ID: " + issue.id + "\n" + issue.title + " | " + issue.priority + " | " + issue.status;
+                    message.text = "上报成功：" + issue.title + "\n" + InspectionUi.Priority(issue.priority) + "优先级 · " + InspectionUi.Status(issue.status);
                     Debug.Log("ARWORK_SAVED_ID=" + issue.id);
                 }
-                else message.text = "Result uncertain. Draft and request kept. SUBMIT retries the same report safely.";
+                else message.text = "尚未确认提交结果，内容已保留，请再次提交。";
             }
             else
             {
-                string detail = request.error;
-                try { detail = JsonUtility.FromJson<Failure>(request.downloadHandler.text)?.error?.message ?? detail; } catch (ArgumentException) { }
-                message.text = "Save failed: " + detail + ". Draft and request kept. SUBMIT retries the same report; editing stays locked.";
+                message.text = InspectionUi.Error(request) + "内容已保留，请再次提交。";
             }
         }
         busy = false; RefreshControls();
@@ -205,13 +208,13 @@ public sealed class IssueReportForm : MonoBehaviour
         test.interactable = !busy;
         historyButton.interactable = !busy;
         edit.interactable = !busy && !pending;
-        editLabel.text = saved ? "NEW ISSUE" : pending ? "RETRY SUBMIT" : PositionLocked ? "BACK TO POINT" : "EDIT REPORT";
+        editLabel.text = saved ? "继续上报" : pending ? "等待重试" : PositionLocked ? "调整位置" : "填写问题";
     }
 
     internal static Text Label(Transform parent, int size)
     {
         var label = new GameObject("Text", typeof(RectTransform), typeof(Text)).GetComponent<Text>();
-        label.transform.SetParent(parent, false); label.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+        label.transform.SetParent(parent, false); label.font = InspectionUi.Font;
         label.fontSize = size; label.color = Color.white; label.raycastTarget = false;
         label.rectTransform.anchorMin = Vector2.zero; label.rectTransform.anchorMax = Vector2.one;
         label.rectTransform.offsetMin = new Vector2(16, 6); label.rectTransform.offsetMax = new Vector2(-16, -6);
