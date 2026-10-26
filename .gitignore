@@ -14,3 +14,9 @@
 *.keystore
 *.jks
 .local/
+**/node_modules/
+**/dist/
+**/*.tsbuildinfo
+output/
+.playwright-cli/
+backend/data/

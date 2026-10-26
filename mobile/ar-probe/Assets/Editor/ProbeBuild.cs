@@ -14,10 +14,21 @@ public static class ProbeBuild
 {
     public static void Android()
     {
+        Build(false);
+    }
+
+    public static void InspectionAndroid()
+    {
+        Build(true);
+    }
+
+    private static void Build(bool inspection)
+    {
         const BuildTargetGroup group = BuildTargetGroup.Android;
         PlayerSettings.companyName = "AR Work";
-        PlayerSettings.productName = "AR Device Probe";
-        PlayerSettings.SetApplicationIdentifier(group, "com.arwork.deviceprobe");
+        PlayerSettings.productName = inspection ? "AR Inspection" : "AR Device Probe";
+        PlayerSettings.SetApplicationIdentifier(group, inspection ? "com.arwork.inspection" : "com.arwork.deviceprobe");
+        PlayerSettings.insecureHttpOption = InsecureHttpOption.AlwaysAllowed;
         PlayerSettings.bundleVersion = "0.1.0";
         PlayerSettings.Android.bundleVersionCode = 1;
         PlayerSettings.Android.minSdkVersion = AndroidSdkVersions.AndroidApiLevel26;
@@ -58,16 +69,18 @@ public static class ProbeBuild
 
         var scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
         var probe = new GameObject("Device probe").AddComponent<ArProbe>();
+        probe.inspectionMode = inspection;
         probe.markerMaterial = CreateMaterial("Assets/Marker.mat", "Unlit/Color", new Color(1f, 0.45f, 0.05f));
         probe.planeMaterial = CreateMaterial("Assets/Plane.mat", "Sprites/Default", new Color(0.1f, 0.8f, 0.35f, 0.25f));
-        EditorSceneManager.SaveScene(scene, "Assets/Probe.unity");
-        EditorBuildSettings.scenes = new[] { new EditorBuildSettingsScene("Assets/Probe.unity", true) };
+        var scenePath = inspection ? "Assets/Inspection.unity" : "Assets/Probe.unity";
+        EditorSceneManager.SaveScene(scene, scenePath);
+        EditorBuildSettings.scenes = new[] { new EditorBuildSettingsScene(scenePath, true) };
         AssetDatabase.SaveAssets();
         Directory.CreateDirectory("Builds");
         var report = BuildPipeline.BuildPlayer(new BuildPlayerOptions
         {
-            scenes = new[] { "Assets/Probe.unity" },
-            locationPathName = "Builds/AR-Device-Probe.apk",
+            scenes = new[] { scenePath },
+            locationPathName = inspection ? "Builds/AR-Inspection.apk" : "Builds/AR-Device-Probe.apk",
             target = BuildTarget.Android,
             options = BuildOptions.None
         });

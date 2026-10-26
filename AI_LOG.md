@@ -615,3 +615,67 @@
 核心代码解释：`ArProbe` 创建 AR 会话、跟踪相机、水平面/射线/锚点管理器；取得相机权限和 AR 服务可用状态后启用会话。触摸先经过 UI raycast 排除，再命中正在跟踪的向上水平面，附着锚点并放置 10 cm 方块。`ProbeBuild` 固定 Android ARM64/IL2CPP/OpenGLES3 配置，生成场景与材质并调用 Unity 构建。构建失败以非成功结果结束。`verify_apk.py` 直接解析实际 APK 和 ELF 头部，不以编辑器版本替代兼容性检查。
 
 交付边界：测试包和源码已准备；尚未在用户手机上安装或运行本测试包，也未验证真实平面识别、锚点稳定性或 UI 操作。Go/React 与问题上报业务流程尚未实现。APK、Unity 缓存、原始构建日志及签名密钥不纳入 Git；源码、复现脚本、脱敏验证结果和本日志纳入本次本地提交。未推送远程。
+
+## Issue #2 实施（2026-10-26）
+
+### 用户指令原文
+
+> [$implement]([REDACTED: local user path]/implement/SKILL.md) #2
+
+随后提供的技能原文：
+
+> ---
+> name: implement
+> description: "Implement a piece of work based on a spec or set of tickets."
+> disable-model-invocation: true
+> ---
+>
+> Implement the work described by the user in the spec or tickets.
+>
+> Use /tdd where possible, at pre-agreed seams.
+>
+> Run typechecking regularly, single test files regularly, and the full test suite once at the end.
+>
+> Once done, use /code-review to review the work.
+>
+> Commit your work to the current branch.
+
+### 真机配合与审查起点回复原文（实际顺序）
+
+> 连接手机并启用了usb调试
+
+> 能正常运行
+
+> 好了
+
+> 连接失败了
+
+> 使用 f5666c6（推荐）
+
+> ok了
+
+> 连接超时
+
+> ok了
+
+以上分别对应 USB 连接、探测包运行、首轮上报尝试、无线地址失败、审查起点确认、有线地址成功、停机连接测试、恢复后再次提交。简短回复不能独立证明全部验收；结论同时依据实际手机截图、Unity 日志、HTTP 响应和真实浏览器。
+
+### 助手向 Standards 子代理发送的指令原文
+
+> 只读审查 Issue #2 本次实现，不修改文件、不派生子代理。用户确认固定起点 f5666c6415fb3396436f3152fec8351bf116000d。待提交内容已创建不移动分支的审查快照 10a149300e73557e1d2df7b7cd1c5a9f605a1341。diff 命令 git diff f5666c6415fb3396436f3152fec8351bf116000d...10a149300e73557e1d2df7b7cd1c5a9f605a1341；commit list: git log f5666c6..10a149300e73557e1d2df7b7cd1c5a9f605a1341 --oneline，只有 Review snapshot: implement #2。规范来源 AGENTS.md、CONTEXT.md、docs/agents/domain.md、docs/agents/issue-tracker.md，以及相关源文件约定；仓库没有额外编码规范。请独立做 Standards 轴：逐文件报告违反文档规范（引用文件和具体规则），以及以下 smell baseline（仅判断建议，非硬违规；仓库标准优先；跳过工具已检查问题）。完整 baseline：Mysterious Name: 名称不能说明用途 -> 重命名；Duplicated Code: 多处相同逻辑形状 -> 提取共享部分；Feature Envy: 访问别的对象数据多于自己的 -> 移到数据归属；Data Clumps: 多个字段或参数反复一起出现 -> 聚合类型；Primitive Obsession: 字符串等原始值代表值得独立类型的领域概念 -> 小类型；Repeated Switches: 相同类型重复分支 -> 多态或共享映射；Shotgun Surgery: 一个变化散布多个文件 -> 聚合模块；Divergent Change: 单模块多种无关变化 -> 分离职责；Speculative Generality: 未有需求的抽象参数扩展点 -> 删除；Message Chains: 长对象导航链 -> 隐藏遍历；Middle Man: 模块大多仅转发 -> 直接调用；Refused Bequest: 子类忽略继承多数行为 -> 用组合。请区分硬违规与 judgement calls，指出可操作问题和准确行号；不为了列 smell 而制造问题。还应识别重大真实缺陷，但勿把 #3-#7 未实现范围算缺陷。输出中文，400 字以内。
+
+### 助手向 Spec 子代理发送的指令原文
+
+> 只读审查 Issue #2，不修改文件、不派生子代理。用户确认固定起点 f5666c6415fb3396436f3152fec8351bf116000d；待提交内容审查快照 10a149300e73557e1d2df7b7cd1c5a9f605a1341（不移动分支）。命令 git diff f5666c6415fb3396436f3152fec8351bf116000d...10a149300e73557e1d2df7b7cd1c5a9f605a1341；commit list git log f5666c6..10a149300e73557e1d2df7b7cd1c5a9f605a1341 --oneline，仅 Review snapshot: implement #2。规格读取 .local/issue-2.json（本任务）和 .local/issue-1.json（父规格，后续 #3-#7 功能尚不在本次范围），术语 CONTEXT.md。按 Spec 轴独立报告：(a) 缺失或部分实现的要求；(b) 没要求的 scope creep；(c) 看似实现但错误的要求。每项引用规格原句和准确代码位置，只报告可操作且有证据的问题，400字以内中文。重点检查 Go HTTP/持久化/CORS、React 真后端列表/错误、Unity AR 选点/UI排除/表单草稿/地址持久化，不以构建成功代替真机证据。验收文档末尾仍待核对的真机项正在主代理与用户配合检查，记作证据待补而非代码必然错误。
+
+### 检查、修改与结果
+
+- 采用：新增 Go 公共 API 与文件持久化、React 列表及错误/重试、Unity 问题表单及地址配置，保留独立探测入口。
+- 首个 API 行为测试先因缺少实现失败，随后实现并通过；后续逐项运行校验、并发、CORS、存储失败等相关测试。React 多次严格类型检查、构建和 lint。
+- 放弃把“好了”直接作为保存成功证据：截图实际仍为默认错误地址，且后端列表为空。继续定位，确认无线 .13 不可达、有线 .8 可达；后以同一 ID 的手机日志、HTTP 和浏览器完成核对。
+- 修正 XR Origin 在 inactive 状态设置跟踪模式造成的协程错误：改为启用对象后设置；业务包真机未再观察该错误。
+- 审查 Standards：0 项硬性违规，1 项低优先级命名建议。采用建议，将忽略坐标参数的 SetPosition 改成无参 MarkPositionSelected；实际提交坐标仍来自当前锚点。Spec：0 项代码偏差，审查时列出的两项验收证据由主代理继续核对。
+- 已有未提交的 AGENTS.md、CONTEXT.md、docs/agents 配置和 AI_LOG 规格发布段落保留，不混入本次业务提交。APK、运行数据、现场截图、下载的 Go 工具链不纳入 Git。
+- 真机补验：主代理直接通过 ADB 操作真实手机的现有平面及表单。首次注入文字早于键盘就绪且返回键取消编辑，未得到预期标题；读回屏幕后使用键盘确认按钮，以实际标题 tage-draft-2 进行检查，没有把最初意图输入的 outage-draft-2 写成实际结果。
+- 服务停止时提交该草稿，截图显示 Request timeout 和 Draft kept，标题保持；恢复服务后同一草稿直接重试保存为 64c5618b812300ba14141d6d0bbd2ebe，HTTP 和网页核对成功。最终覆盖安装后保存的地址仍在，SessionTracking，连接测试成功。
+- 最终 Go 全套 5 项测试通过（含 9 个无效请求子用例），go vet、严格 TypeScript / Vite 构建、Oxlint 通过。最终 APK 签名、ZIP CRC、7 个 ARM64 原生库 16 KB 对齐通过。具体版本、哈希和证据见 docs/issue-2-acceptance.md。

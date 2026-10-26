@@ -8,9 +8,11 @@ using UnityEngine.UI;
 using UnityEngine.XR.ARFoundation;
 using UnityEngine.XR.ARSubsystems;
 
-// Device feasibility probe only: no backend, accounts, or persistent location data.
+// Shared horizontal-plane tracking for the standalone probe and inspection app.
 public sealed class ArProbe : MonoBehaviour
 {
+    public bool inspectionMode;
+    private IssueReportForm reportForm;
     public Material markerMaterial;
     public Material planeMaterial;
     private ARSession session;
@@ -60,13 +62,13 @@ public sealed class ArProbe : MonoBehaviour
         pose.updateType = TrackedPoseDriver.UpdateType.UpdateAndBeforeRender;
         origin.Camera = camera;
         origin.CameraFloorOffsetObject = offset;
-        origin.RequestedTrackingOriginMode = XROrigin.TrackingOriginMode.Device;
         planes = originObject.AddComponent<ARPlaneManager>();
         planes.requestedDetectionMode = PlaneDetectionMode.Horizontal;
         planes.planesChanged += OnPlanesChanged;
         raycasts = originObject.AddComponent<ARRaycastManager>();
         anchors = originObject.AddComponent<ARAnchorManager>();
         originObject.SetActive(true);
+        origin.RequestedTrackingOriginMode = XROrigin.TrackingOriginMode.Device;
     }
 
     private IEnumerator Start()
@@ -127,11 +129,12 @@ public sealed class ArProbe : MonoBehaviour
         foreach (var plane in planes.trackables)
             if (plane.trackingState == TrackingState.Tracking && plane.alignment == PlaneAlignment.HorizontalUp)
                 trackedPlanes++;
-        status.text = "AR DEVICE PROBE\nSession: " + ARSession.state +
+        status.text = (inspectionMode ? "AR INSPECTION" : "AR DEVICE PROBE") + "\nSession: " + ARSession.state +
                       "\nTracking reason: " + ARSession.notTrackingReason +
                       "\nHorizontal planes: " + trackedPlanes + "   Placements: " + placements +
                       (marker ? "\nPosition (m): " + lastPosition.ToString("F2") : "\nMarker: none");
         if (ARSession.state != ARSessionState.SessionTracking || Input.touchCount == 0) return;
+        if (reportForm != null && reportForm.PositionLocked) return;
         var touch = Input.GetTouch(0);
         if (touch.phase != TouchPhase.Began) return;
         var pointer = new PointerEventData(EventSystem.current) { position = touch.position };
@@ -170,6 +173,7 @@ public sealed class ArProbe : MonoBehaviour
             if (markerAnchor != null) Destroy(markerAnchor.gameObject);
             markerAnchor = newAnchor;
             placements++;
+            if (reportForm != null) reportForm.MarkPositionSelected();
             notice.text = "Marker placed. Walk around it: it should stay on the table. UI buttons must not place markers.";
             return;
         }
@@ -178,9 +182,20 @@ public sealed class ArProbe : MonoBehaviour
 
     private void ClearMarker()
     {
+        if (reportForm != null && reportForm.PositionLocked) return;
         if (marker != null) Destroy(marker);
         if (markerAnchor != null) Destroy(markerAnchor.gameObject);
+        if (reportForm != null) reportForm.ClearPosition();
         notice.text = "Marker cleared. Tap a detected table to place it again.";
+    }
+
+    public Vector3 CurrentPosition => markerAnchor != null ? markerAnchor.transform.position : lastPosition;
+
+    public void KeepSubmittedMarker()
+    {
+        // The confirmed marker stays in this session; the next report gets a new anchor.
+        marker = null;
+        markerAnchor = null;
     }
 
     private void CreateUi()
@@ -211,6 +226,11 @@ public sealed class ArProbe : MonoBehaviour
         clear.onClick.AddListener(ClearMarker);
         var exit = MakeButton(bottom, "EXIT APP", 0.51f, 0.98f);
         exit.onClick.AddListener(() => Application.Quit());
+        if (inspectionMode)
+        {
+            reportForm = gameObject.AddComponent<IssueReportForm>();
+            reportForm.Initialize(safe, this);
+        }
     }
 
     private static RectTransform Panel(Transform parent, string name, Vector2 min, Vector2 max, Vector2 pivot, float height)
