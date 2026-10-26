@@ -133,8 +133,18 @@ public sealed class InspectionNavigationRunner : MonoBehaviour
         Check(!probe.DepthAssistanceEnabled && PlayerPrefs.GetInt(ArProbe.DepthPreference) == 0, "settings depth switch persists disabled choice");
         var rows = Field<RectTransform>(history, "rows");
         Check(rows.childCount == 1 && rows.GetComponentInChildren<Text>().text.Contains("Server A"), "homepage reads HTTP records");
+        var homePhoto = rows.GetComponentInChildren<RawImage>();
+        Check(homePhoto != null && homePhoto.texture != null && homePhoto.texture.width == 32 && homePhoto.texture.height == 48,
+            "homepage displays associated snapshot thumbnail without camera");
         rows.GetComponentInChildren<Button>().onClick.Invoke(); yield return new WaitForSecondsRealtime(1);
         Check(Field<InputField>(history, "title").text == "Server A", "detail loads without camera");
+        Check(Field<Text>(history, "metadata").text.Contains("最近同步："), "online detail shows last successful sync time");
+        responseMode = 2; Field<Button>(history, "refresh").onClick.Invoke(); yield return new WaitForSecondsRealtime(1);
+        Check(!Field<InputField>(history, "title").interactable && !Field<Button>(history, "save").interactable &&
+            !Field<Button>(history, "remark").interactable && Field<Text>(history, "message").text.Contains("只读"),
+            "failed online refresh makes synced detail read only without discarding content");
+        responseMode = 0; Field<Button>(history, "refresh").onClick.Invoke(); yield return new WaitForSecondsRealtime(1);
+        Check(Field<InputField>(history, "title").interactable, "successful refresh restores online editing");
         yield return new WaitForSecondsRealtime(1);
         var photoArea = GameObject.Find("现场照片");
         var photoImage = photoArea.GetComponentInChildren<RawImage>();
@@ -185,6 +195,8 @@ public sealed class InspectionNavigationRunner : MonoBehaviour
         yield return new WaitForSecondsRealtime(1);
         var localButton = Array.Find(rows.GetComponentsInChildren<Button>(), button => button.GetComponentInChildren<Text>().text.Contains("offline local"));
         Check(localButton != null, "home includes durable local record");
+        Check(localButton.GetComponentInChildren<RawImage>()?.texture != null && localButton.GetComponentInChildren<Text>().text.Contains("待处理"),
+            "local home row shows snapshot and provisional processing status");
         localButton.onClick.Invoke();
         Check(local.IsOpen && Field<InputField>(local, "title").interactable && !probe.CameraActive, "unsent local detail opens editable without camera");
         yield return null;
@@ -210,6 +222,8 @@ public sealed class InspectionNavigationRunner : MonoBehaviour
         local.enabled = true;
         yield return new WaitForSecondsRealtime(3);
         Check(local.IsOpen && localQueue.Get(localEntry.key).state == "synced", "read-only local detail does not block automatic upload");
+        Check(Field<Text>(local, "info").text.Contains("最近同步：") && Field<Text>(local, "info").text.Contains("回执状态：处理中"),
+            "acknowledged local detail displays receipt status and durable sync time");
         local.Hide(); history.Hide();
         const string frozen = "{\"title\":\"pending A\",\"description\":\"original\",\"priority\":\"medium\",\"position\":{\"x\":1,\"y\":2,\"z\":3}}";
         var pending = "{\"key\":\"frozen-key\",\"server\":\"http://127.0.0.1:18081\",\"body\":\"" + frozen.Replace("\"", "\\\"") + "\"}";

@@ -153,7 +153,7 @@ public sealed class IssueLiveUpdates : MonoBehaviour
                     }
                     catch (ArgumentException) { }
                 }
-                if (!applied) { dirty = true; retryAt = Time.realtimeSinceStartup + 2f; SetState("同步未完成，正在重试，草稿已保留"); }
+                if (!applied) { history.MarkSyncUnavailable(address); dirty = true; retryAt = Time.realtimeSinceStartup + 2f; SetState("同步未完成，旧状态请核对最近同步时间，正在重试"); }
             }
         }
         fetching = false;
