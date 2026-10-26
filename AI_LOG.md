@@ -525,3 +525,18 @@
 - 记录用户报告的 Android 16 与“未找到”服务；未将“未找到”直接认定为手机不支持 AR。核对 Google Play 官方应用页，确认应用名 Google Play Services for AR、开发者 Google LLC、包名 com.google.ar.core；依据此前核查的 Google 中国区渠道说明，引导先在小米应用商店查找，已有 Google Play 时使用官方应用链接。小米商店网页未能由浏览工具打开，因此不声称已确认该手机商店当前可安装。仍需用户反馈安装结果，再运行 Unity 平面检测测试。
 
 核查来源：[Google Play 官方应用页](https://play.google.com/store/apps/details?id=com.google.ar.core)、[Google 官方中国区设备与渠道说明](https://developers.google.com/ar/devices#android_china)。
+
+## P-014
+
+- 目标：用户确认已安装 AR 服务，推进真机检测准备
+
+### Prompt 原文
+
+> 已安装
+
+### 结果
+
+- 采用
+- 记录用户报告的安装成功，不将其等同于 AR 平面检测通过。检查本机安装记录及可执行文件，确认已有 Unity 2022.3.34f1c1；检查该编辑器的 PlaybackEngines 路径，未找到 AndroidPlayer、配套 SDK/adb、NDK 和 OpenJDK。依据 Unity 官方环境配置文档指导在 Unity Hub 给现有编辑器添加 Android 构建模块。本轮未安装电脑软件、未生成 APK，也未运行手机测试。
+
+核查来源：[Unity Android 环境设置](https://docs.unity.cn/Documentation/Manual/android-sdksetup.html)、[Google AR Foundation 运行时检查](https://developers.google.com/ar/develop/unity-arf/enable-arcore)。
