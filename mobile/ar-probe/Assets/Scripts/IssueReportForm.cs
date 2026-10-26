@@ -18,11 +18,13 @@ public sealed class IssueReportForm : MonoBehaviour
     [Serializable] private sealed class PendingRequest { public string key, body, server; }
     private const string PendingPreference = "arwork.pending-report";
 
-    public bool PositionLocked { get; private set; }
+    private bool positionLocked;
+    public bool PositionLocked { get => positionLocked || (history != null && history.IsOpen); private set => positionLocked = value; }
+    private IssueHistoryPanel history;
     private ArProbe probe;
     private InputField address, title, description;
     private Text message, priorityLabel, editLabel;
-    private Button edit, submit, priority, test;
+    private Button edit, submit, priority, test, historyButton;
     private bool hasPosition, busy, saved;
     private int priorityIndex = 1;
     private string requestKey, requestBody, requestAddress;
@@ -37,8 +39,15 @@ public sealed class IssueReportForm : MonoBehaviour
         panel.GetComponent<Image>().color = new Color(0.02f, 0.05f, 0.08f, 0.94f);
         var rect = panel.GetComponent<RectTransform>();
         rect.anchorMin = new Vector2(0, 0); rect.anchorMax = new Vector2(1, 0);
-        rect.pivot = new Vector2(0.5f, 0); rect.sizeDelta = new Vector2(0, 720);
+        rect.pivot = new Vector2(0.5f, 0); rect.sizeDelta = new Vector2(0, 795);
         rect.anchoredPosition = new Vector2(0, 130);
+        history = gameObject.AddComponent<IssueHistoryPanel>();
+        history.Initialize(parent, () => panel.SetActive(true));
+        historyButton = ButtonAt(rect, "ALL ISSUES", 725, 0.03f, 0.97f, () => {
+            if (busy || !SaveAddress()) return;
+            panel.SetActive(false);
+            history.Open(address.text);
+        });
         address = Field(rect, "Server URL (http://PC-IP:8080)", 650, 60, false);
         address.text = PlayerPrefs.GetString("arwork.server", "http://192.168.1.100:8080");
         address.onEndEdit.AddListener(value => SaveAddress());
@@ -194,11 +203,12 @@ public sealed class IssueReportForm : MonoBehaviour
         title.interactable = description.interactable = priority.interactable = PositionLocked && !busy && !saved && !pending;
         submit.interactable = PositionLocked && !busy && !saved;
         test.interactable = !busy;
+        historyButton.interactable = !busy;
         edit.interactable = !busy && !pending;
         editLabel.text = saved ? "NEW ISSUE" : pending ? "RETRY SUBMIT" : PositionLocked ? "BACK TO POINT" : "EDIT REPORT";
     }
 
-    private static Text Label(Transform parent, int size)
+    internal static Text Label(Transform parent, int size)
     {
         var label = new GameObject("Text", typeof(RectTransform), typeof(Text)).GetComponent<Text>();
         label.transform.SetParent(parent, false); label.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
@@ -215,7 +225,7 @@ public sealed class IssueReportForm : MonoBehaviour
         rect.sizeDelta = new Vector2(0, height); rect.anchoredPosition = new Vector2(0, y); return rect;
     }
 
-    private static InputField Field(Transform parent, string hint, float y, float height, bool multiline)
+    internal static InputField Field(Transform parent, string hint, float y, float height, bool multiline)
     {
         var obj = new GameObject(hint, typeof(RectTransform), typeof(Image), typeof(InputField));
         Place(obj, parent, y, height); obj.GetComponent<Image>().color = new Color(0.16f, 0.23f, 0.28f);
@@ -226,7 +236,7 @@ public sealed class IssueReportForm : MonoBehaviour
         return field;
     }
 
-    private static Button ButtonAt(Transform parent, string caption, float y, float min, float max, UnityEngine.Events.UnityAction action)
+    internal static Button ButtonAt(Transform parent, string caption, float y, float min, float max, UnityEngine.Events.UnityAction action)
     {
         var obj = new GameObject(caption, typeof(RectTransform), typeof(Image), typeof(Button));
         Place(obj, parent, y, 60, min, max); obj.GetComponent<Image>().color = new Color(0.1f, 0.32f, 0.35f);
