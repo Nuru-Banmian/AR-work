@@ -23,7 +23,7 @@ public sealed class ReferenceSetup : MonoBehaviour
     private GameObject panel, cameraControls;
     private RectTransform guide;
     private RawImage preview;
-    private Text message, selectedLabel;
+    private Text message, selectedLabel, photoHint;
     private InputField targetName, location, width, height;
     private Button save, photo, refresh, cycle, back;
     private Texture2D draftImage, displayedImage;
@@ -67,6 +67,10 @@ public sealed class ReferenceSetup : MonoBehaviour
         foreach (var field in new[] { targetName, location, width, height }) field.onValueChanged.AddListener(_ => {
             if (draftServer == null) draftServer = catalog.Server;
         });
+        photoHint = IssueReportForm.Label(rect, 20);
+        photoHint.gameObject.name = "拍摄尺寸提示";
+        photoHint.rectTransform.anchorMin = new Vector2(0.03f, 0); photoHint.rectTransform.anchorMax = new Vector2(0.97f, 0);
+        photoHint.rectTransform.pivot = new Vector2(0.5f, 0); photoHint.rectTransform.sizeDelta = new Vector2(0, 30); photoHint.rectTransform.anchoredPosition = new Vector2(0, 390);
         photo = IssueReportForm.ButtonAt(rect, "拍摄 / 重拍图案", 330, 0.03f, 0.97f, BeginPhoto);
         save = IssueReportForm.ButtonAt(rect, "确认并保存参照", 240, 0.03f, 0.97f, () => { if (!busy) StartCoroutine(Save()); });
         refresh = IssueReportForm.ButtonAt(rect, "下载 / 刷新参照", 150, 0.03f, 0.97f, () => { if (!busy) StartCoroutine(Refresh()); });
@@ -143,18 +147,28 @@ public sealed class ReferenceSetup : MonoBehaviour
     {
         busy = true; yield return catalog.Refresh(); busy = false; ShowSelected(); message.text = catalog.Message;
     }
-    private bool Dimensions(out float w, out float h)
+    private bool Dimensions(out float w, out float h, bool explain = true)
     {
         w = h = 0;
         if (!float.TryParse(width.text, NumberStyles.Float, CultureInfo.InvariantCulture, out w) ||
             !float.TryParse(height.text, NumberStyles.Float, CultureInfo.InvariantCulture, out h) ||
             float.IsNaN(w) || float.IsNaN(h) || w < 5 || h < 5 || w > 500 || h > 500 || w/h > 4 || h/w > 4)
-        { message.text = "请输入实测宽高 5–500 厘米，长宽比不超过 4。"; return false; }
+        {
+            if (explain) message.text = "拍摄前请填写图案实测宽高（厘米）：各 5–500，长宽比不超过 4。";
+            return false;
+        }
         w /= 100; h /= 100; return true;
     }
     private void BeginPhoto()
     {
-        if (busy || (draftServer != null && draftServer != catalog.Server) || frozenBody != null || !Dimensions(out float w, out float h)) return;
+        if (busy || (draftServer != null && draftServer != catalog.Server) || frozenBody != null || pendingInvalid) return;
+        if (!Dimensions(out float w, out float h))
+        {
+            var missing = !float.TryParse(width.text, NumberStyles.Float, CultureInfo.InvariantCulture, out float measuredWidth) ||
+                float.IsNaN(measuredWidth) || measuredWidth < 5 || measuredWidth > 500 ? width : height;
+            missing.Select(); missing.ActivateInputField();
+            return;
+        }
         float pixelsWide = Mathf.Min(Screen.width * 0.8f, Screen.height * 0.55f * w/h);
         guide.sizeDelta = new Vector2(pixelsWide, pixelsWide * h/w) / canvas.scaleFactor;
         panel.SetActive(false); cameraControls.SetActive(true); probe.BeginEnrollment();
@@ -250,6 +264,10 @@ public sealed class ReferenceSetup : MonoBehaviour
     }
     private void Update()
     {
+        bool hasDimensions = Dimensions(out _, out _, false);
+        photo.GetComponentInChildren<Text>().text = hasDimensions ? "拍摄 / 重拍图案" : "先填写实测宽高，再拍摄";
+        photoHint.text = hasDimensions ? "请正对固定图案，使四边贴合取景框。" : "必填：图案实测宽高（厘米），各 5–500，长宽比 ≤ 4。";
+        photoHint.color = hasDimensions ? new Color(0.7f, 1f, 0.7f) : new Color(1f, 0.75f, 0.35f);
         bool editable = !busy && !pendingInvalid && frozenBody == null && (draftServer == null || draftServer == catalog.Server);
         targetName.interactable = location.interactable = width.interactable = height.interactable = photo.interactable = cycle.interactable = editable;
         refresh.interactable = back.interactable = !busy;
