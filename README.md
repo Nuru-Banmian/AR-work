@@ -1,11 +1,13 @@
 # 园区巡检 AR 原型
 
-Unity 在小米 13 Pro 上选点并填写问题，通过 Go 保存，React 查看详情及修改状态。#2 提供最小闭环，#3 增加可靠重试、竖直面、处理状态和深度选点，#4 增加手机历史查询与内容编辑，#5 增加历史问题重新标记，#6 增加 SSE 跨端更新和当前会话标记状态颜色。术语见 `CONTEXT.md`，规格见 [Issue #1](https://github.com/Nuru-Banmian/AR-work/issues/1)，本次任务见 [Issue #6](https://github.com/Nuru-Banmian/AR-work/issues/6)。
+Unity 在小米 13 Pro 上选点并填写问题，通过 Go 保存，React 查看详情及修改状态。#2 提供最小闭环，#3 增加可靠重试、竖直面、处理状态和深度选点，#4 增加手机历史查询与内容编辑，#5 增加历史问题重新标记，#6 增加 SSE 跨端更新和当前会话标记状态颜色。规格见 [Issue #1](https://github.com/Nuru-Banmian/AR-work/issues/1)，交付任务见 [Issue #7](https://github.com/Nuru-Banmian/AR-work/issues/7)。
+
+交付入口：[源码清单、测试结果与验收边界](docs/issue-7-delivery.md)、[两段视频录制脚本与待填交付位置](docs/demo-recording.md)、[AI 使用记录](AI_LOG.md)。源码、自动检查及已有真机证据已整理；两段 3–5 分钟视频待人工录制，#7 尚未全部验收完成。
 
 ## 实际版本
 
 - Unity 2022.3.62f3c1 LTS；AR Foundation / ARCore XR Plugin 5.2.2。
-- Go 1.27.3（标准库，无第三方后端依赖）。
+- Go 1.27.3（本次实际验证版本；go.mod 声明最低语言版本 1.23，未单独验证最低版本；标准库，无第三方后端依赖）。
 - Node.js 22.22.3；npm 10.9.8；React / React DOM 19.3.1；TypeScript 6.0.3；Vite 8.3.5。前端完整版本由 `web/package-lock.json` 固定，使用 `npm ci` 复现。
 - 真机：小米 13 Pro，Android 16，HyperOS OS3.0.312.0.WMBCNXM。相机权限及 Google Play Services for AR 必须可用。
 
@@ -105,4 +107,4 @@ API 测试使用真实 HTTP 服务及临时文件，覆盖创建、参数校验�
 
 SSE 仅在成功保存后广播，幂等创建回放和失败请求不广播；通知不带问题快照、不提供持久事件回放，重连后的全量查询补齐变化。每个订阅者最多积压一个失效通知，慢客户端不会阻塞写入；10 秒心跳及有界写超时处理失联客户端，退出时清理订阅。若使用代理，需关闭 SSE 缓冲并允许长连接。验证见 [#6 验收记录](docs/issue-6-acceptance.md)。
 
-后续任务尚未实现：交付视频。不包含登录权限或公网部署。Depth 的接入和用户同机反馈不构成厘米级精度、白墙通用可靠性或长期跟踪保证；构建和真机验证分别记录。
+已实现上报、持久化、网页状态管理、手机历史内容编辑、重新标记及可选 SSE。待完成：手机与电脑各一段 3–5 分钟视频，及最终包同一问题 ID 的完整现场复验，见交付清单。当前交付不包含登录权限或公网部署。Depth 的接入和用户同机反馈不构成厘米级精度、白墙通用可靠性或长期跟踪保证；构建和真机验证分别记录。历史存在系统 LOW_MEMORY 退出，尚无长时间稳定性结论。
