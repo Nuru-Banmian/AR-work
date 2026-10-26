@@ -47,6 +47,7 @@ public sealed class IssueHistoryPanel : MonoBehaviour
     // A draft remains attached to its server and ID when navigating or retrying.
     private readonly Dictionary<string, Content> drafts = new Dictionary<string, Content>();
     private IssuePhotoView photoView;
+    private Issue[] remoteRows = new Issue[0];
 
     public void Initialize(Transform parent, ArProbe owner, Action returnToReport)
     {
@@ -133,7 +134,8 @@ public sealed class IssueHistoryPanel : MonoBehaviour
         CancelLoad(); KeepDraft();
         bool changedServer = server != address;
         server = address; selectedId = null; detailLoaded = false;
-        if (changedServer) foreach (Transform child in rows) { child.gameObject.SetActive(false); Destroy(child.gameObject); }
+        if (changedServer) remoteRows = new Issue[0];
+        RenderList(remoteRows);
         panel.SetActive(true); ShowPage(); BeginLoad();
     }
 
@@ -201,7 +203,7 @@ public sealed class IssueHistoryPanel : MonoBehaviour
             loadRequest = request;
             request.timeout = 15;
             yield return request.SendWebRequest();
-            if (request.result != UnityWebRequest.Result.Success) message.text = InspectionUi.Error(request) + "草稿已保留，可点击刷新重试。";
+            if (request.result != UnityWebRequest.Result.Success) message.text = InspectionUi.Error(request) + "本地记录仍可查看，可点击刷新重试。";
             else
             {
                 try
@@ -211,7 +213,7 @@ public sealed class IssueHistoryPanel : MonoBehaviour
                         var issues = JsonUtility.FromJson<IssueList>(request.downloadHandler.text)?.data;
                         if (issues == null) throw new ArgumentException("Missing issue list");
                         RenderList(issues);
-                        message.text = issues.Length == 0 ? "暂无问题，点击新增问题开始记录。" : "共 " + issues.Length + " 个问题，点击查看详情。";
+                        message.text = issues.Length == 0 ? "暂无服务器问题，本地记录见列表。" : "共 " + issues.Length + " 个问题，点击查看详情。";
                     }
                     else
                     {
@@ -230,6 +232,8 @@ public sealed class IssueHistoryPanel : MonoBehaviour
     private void RenderList(Issue[] issues)
     {
         foreach (Transform child in rows) { child.gameObject.SetActive(false); Destroy(child.gameObject); }
+        remoteRows = issues;
+        GetComponent<LocalReports>()?.RenderRows(rows, issues);
         foreach (var issue in issues)
         {
             if (issue == null || string.IsNullOrEmpty(issue.id)) throw new ArgumentException("Invalid issue");
@@ -243,6 +247,12 @@ public sealed class IssueHistoryPanel : MonoBehaviour
         listPage.GetComponent<ScrollRect>().verticalNormalizedPosition = 1;
     }
 
+    public void RefreshLocalRows()
+    {
+        if (panel == null || !panel.activeSelf || selectedId != null) return;
+        RenderList(remoteRows);
+    }
+
     public void ApplyLiveIssues(string address, Issue[] issues)
     {
         if (address != server || !IsOpen || busy) return;
@@ -250,7 +260,7 @@ public sealed class IssueHistoryPanel : MonoBehaviour
         if (selectedId == null)
         {
             RenderList(issues);
-            message.text = issues.Length == 0 ? "暂无问题，点击新增问题开始记录。" : "共 " + issues.Length + " 个问题，点击查看详情。";
+            message.text = issues.Length == 0 ? "暂无服务器问题，本地记录见列表。" : "共 " + issues.Length + " 个问题，点击查看详情。";
         }
         else foreach (var issue in issues)
         {

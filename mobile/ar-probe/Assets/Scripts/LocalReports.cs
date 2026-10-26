@@ -1,0 +1,158 @@
+using System;
+using System.Linq;
+using System.Net.Http;
+using System.IO;
+using UnityEngine;
+using UnityEngine.UI;
+
+// Local records share the home list; the server list replaces them by acknowledged ID.
+public sealed class LocalReports : MonoBehaviour
+{
+    [Serializable] public sealed class Payload {
+        public string title, description, priority, snapshot;
+        public IssueHistoryPanel.Position position;
+    }
+    private ReportQueue queue;
+    private ReportQueueSender sender;
+    private HttpClient client;
+    private Func<string> server;
+    private Action changed, closed;
+    private GameObject panel;
+    private InputField title, description;
+    private Button save, priority, retry;
+    private Text info;
+    private RawImage photo;
+    private Texture2D texture;
+    private string selected, failure;
+    private string retryKey;
+    private int priorityIndex;
+    private bool sending, paused;
+    private float nextAttempt;
+    private readonly string[] priorities = { "low", "medium", "high" };
+    public bool IsOpen => panel != null && panel.activeSelf;
+    public string Error => failure;
+
+    public void Initialize(Transform parent, Func<string> currentServer, Action onChanged, Action onClosed)
+    {
+        server = currentServer; changed = onChanged; closed = onClosed;
+        try {
+            queue = new ReportQueue(Path.Combine(Application.persistentDataPath, "report-queue-v1"));
+            queue.List(server()); // fail closed on corrupt data
+            sender = new ReportQueueSender(queue);
+            client = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
+        } catch (Exception error) { failure = "本地队列读取失败，请保留应用数据。"; Debug.LogException(error); }
+        panel = new GameObject("本地问题详情", typeof(RectTransform), typeof(Image));
+        panel.transform.SetParent(parent, false);
+        var rect = panel.GetComponent<RectTransform>();
+        rect.anchorMin = Vector2.zero; rect.anchorMax = Vector2.one;
+        rect.offsetMin = new Vector2(0, 120); rect.offsetMax = new Vector2(0, -120);
+        panel.GetComponent<Image>().color = new Color(0.02f, 0.05f, 0.08f, 1);
+        IssueReportForm.ButtonAt(rect, "返回首页", 10, 0.03f, 0.97f, () => { Hide(); closed(); });
+        retry = IssueReportForm.ButtonAt(rect, "重试上传", 90, 0.52f, 0.97f, () => { retryKey = selected; nextAttempt = 0; Hide(); closed(); });
+        save = IssueReportForm.ButtonAt(rect, "保存修改", 90, 0.03f, 0.48f, SaveEdit);
+        priority = IssueReportForm.ButtonAt(rect, "优先级", 180, 0.03f, 0.97f, () => {
+            priorityIndex = (priorityIndex + 1) % priorities.Length; SetPriority();
+        });
+        description = IssueReportForm.Field(rect, "描述", 270, 120, true);
+        title = IssueReportForm.Field(rect, "标题", 410, 75, false);
+        title.characterLimit = description.characterLimit = 0;
+        photo = new GameObject("本地快照", typeof(RectTransform), typeof(RawImage)).GetComponent<RawImage>();
+        photo.transform.SetParent(rect, false);
+        photo.rectTransform.anchorMin = new Vector2(0.05f, 0.46f); photo.rectTransform.anchorMax = new Vector2(0.95f, 0.73f);
+        photo.rectTransform.offsetMin = photo.rectTransform.offsetMax = Vector2.zero;
+        photo.gameObject.AddComponent<AspectRatioFitter>().aspectMode = AspectRatioFitter.AspectMode.FitInParent;
+        info = IssueReportForm.Label(rect, 26);
+        info.rectTransform.anchorMin = new Vector2(0.03f, 0.75f); info.rectTransform.anchorMax = new Vector2(0.97f, 0.98f);
+        info.rectTransform.offsetMin = info.rectTransform.offsetMax = Vector2.zero;
+        panel.SetActive(false);
+    }
+
+    public ReportQueue.Entry Add(string address, string endpoint, string body, string key = null, bool frozen = false)
+    {
+        if (failure != null) throw new IOException(failure);
+        var entry = queue.Add(address, endpoint, body, key, frozen);
+        nextAttempt = Time.realtimeSinceStartup + 1; changed(); return entry;
+    }
+
+    public void RenderRows(Transform rows, IssueHistoryPanel.Issue[] remote)
+    {
+        if (failure != null) {
+            var label = IssueReportForm.Label(rows, 25); label.text = failure;
+            label.gameObject.AddComponent<LayoutElement>().preferredHeight = 100; return;
+        }
+        try {
+            foreach (var entry in queue.List(server())) {
+                if (entry.state == "synced" && remote.Any(issue => issue.id == entry.serverId)) continue;
+                var payload = JsonUtility.FromJson<Payload>(entry.body);
+                var button = IssueReportForm.ButtonAt(rows, payload.title + "\n" + State(entry) +
+                    (entry.frozen ? " · 已冻结" : " · 可编辑"), 0, 0, 1, () => Show(entry.key));
+                button.gameObject.AddComponent<LayoutElement>().preferredHeight = 155;
+            }
+        } catch (Exception error) { failure = "本地记录读取失败，请保留应用数据。"; Debug.LogException(error); }
+    }
+
+    public static string State(ReportQueue.Entry entry) => entry.state == "pending" ? "待上传" :
+        entry.state == "synced" ? "已同步" : entry.state == "uploading" ? "上传中 / 中断后将重试" : "上传失败";
+
+    private void Show(string key)
+    {
+        try {
+            var entry = queue.Get(key); var payload = JsonUtility.FromJson<Payload>(entry.body);
+            selected = key; title.text = payload.title; description.text = payload.description;
+            priorityIndex = Array.IndexOf(priorities, payload.priority); SetPriority();
+            title.interactable = description.interactable = priority.interactable = save.interactable = !entry.frozen;
+            retry.interactable = entry.state != "synced";
+            info.text = State(entry) + "\n" + (entry.frozen ? "请求已冻结，重试使用原内容。" : "尚未发送，可编辑内容。") +
+                "\n" + entry.error + (entry.serverId == null ? "" : "\n服务器编号：" + entry.serverId);
+            if (texture != null) Destroy(texture); texture = null; photo.enabled = false;
+            if (!string.IsNullOrEmpty(payload.snapshot)) {
+                texture = new Texture2D(2, 2);
+                if (!texture.LoadImage(Convert.FromBase64String(payload.snapshot))) throw new InvalidDataException("Invalid photo");
+                photo.texture = texture; photo.enabled = true;
+                photo.GetComponent<AspectRatioFitter>().aspectRatio = (float)texture.width / texture.height;
+            }
+            panel.transform.SetAsLastSibling(); panel.SetActive(true);
+        } catch (Exception error) { failure = "本地详情读取失败，请保留应用数据。"; Debug.LogException(error); changed(); }
+    }
+
+    private void SetPriority() { priority.GetComponentInChildren<Text>().text = "优先级：" + InspectionUi.Priority(priorities[priorityIndex]); }
+
+    private void SaveEdit()
+    {
+        try {
+            if (string.IsNullOrWhiteSpace(title.text)) { info.text = "请填写标题，输入已保留。"; return; }
+            var entry = queue.Get(selected); var payload = JsonUtility.FromJson<Payload>(entry.body);
+            payload.title = title.text.Trim(); payload.description = description.text; payload.priority = priorities[priorityIndex];
+            queue.Edit(selected, JsonUtility.ToJson(payload)); Hide(); nextAttempt = 0; closed(); changed();
+        } catch (Exception error) { info.text = "保存失败，输入已保留。" + error.Message; }
+    }
+
+    public void Hide()
+    {
+        panel.SetActive(false); selected = null; photo.texture = null;
+        if (texture != null) Destroy(texture); texture = null;
+    }
+
+    private async void Update()
+    {
+        if (failure != null || sender == null || sending || paused || IsOpen || Time.realtimeSinceStartup < nextAttempt) return;
+        sending = true;
+        try {
+            var uploadServer = server();
+            var task = sender.UploadNext(uploadServer, client, retryKey);
+            retryKey = null;
+            changed(); // BeginSend has already persisted its uploading state.
+            bool attempted = await task;
+            if (this == null) return;
+            foreach (var entry in queue.List(uploadServer).Where(item => item.state == "synced"))
+                GetComponent<ArProbe>()?.AcknowledgeQueuedMarker(uploadServer, entry.key, entry.serverId);
+            nextAttempt = Time.realtimeSinceStartup + (attempted ? 2 : 5);
+            changed();
+            if (attempted) GetComponent<IssueLiveUpdates>()?.Refresh();
+        } catch (Exception error) { failure = "队列保存或读取失败，请保留应用数据。"; Debug.LogException(error); changed(); }
+        finally { sending = false; }
+    }
+
+    private void OnApplicationPause(bool value) { paused = value; if (!value) nextAttempt = 0; }
+    private void OnDestroy() { client?.Dispose(); if (texture != null) Destroy(texture); }
+}

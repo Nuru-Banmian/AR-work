@@ -27,6 +27,8 @@ public static class InspectionNavigationChecks
 
     public static void Run()
     {
+        var queuePath = Path.Combine(Application.persistentDataPath, "report-queue-v1");
+        if (Directory.Exists(queuePath)) Directory.Move(queuePath, queuePath + ".navigation-backup");
         SessionState.SetBool("depth.exists", PlayerPrefs.HasKey(ArProbe.DepthPreference));
         SessionState.SetInt("depth.backup", PlayerPrefs.GetInt(ArProbe.DepthPreference, 0));
         PlayerPrefs.DeleteKey(ArProbe.DepthPreference);
@@ -49,6 +51,9 @@ public static class InspectionNavigationChecks
         foreach (var key in new[] { "arwork.server", "arwork.pending-report" })
             if (SessionState.GetBool(key + ".exists", false)) PlayerPrefs.SetString(key, SessionState.GetString(key + ".backup", ""));
             else PlayerPrefs.DeleteKey(key);
+        var queuePath = Path.Combine(Application.persistentDataPath, "report-queue-v1");
+        if (Directory.Exists(queuePath)) Directory.Delete(queuePath, true);
+        if (Directory.Exists(queuePath + ".navigation-backup")) Directory.Move(queuePath + ".navigation-backup", queuePath);
         PlayerPrefs.Save(); SessionState.SetBool(Flag, false);
         EditorApplication.Exit(code);
     }
@@ -159,7 +164,7 @@ public sealed class InspectionNavigationRunner : MonoBehaviour
         Field<Button>(form, "test").onClick.Invoke(); yield return new WaitForSecondsRealtime(1);
         Check(Field<Text>(form, "settingsMessage").text == "连接成功。", "settings tests real health endpoint");
         responseMode = 1; form.ShowHome(); yield return new WaitForSecondsRealtime(1);
-        Check(rows.childCount == 0 && Field<Text>(history, "message").text.Contains("暂无问题"), "empty list gives actionable feedback");
+        Check(rows.childCount == 0 && Field<Text>(history, "message").text.Contains("暂无服务器问题"), "empty list gives actionable feedback");
         responseMode = 2; Field<Button>(history, "refresh").onClick.Invoke(); yield return new WaitForSecondsRealtime(1);
         Check(Field<Text>(history, "message").text.Contains("失败"), "HTTP failure gives retry feedback");
         responseMode = 0; Field<Button>(history, "refresh").onClick.Invoke(); yield return new WaitForSecondsRealtime(1);
@@ -171,15 +176,36 @@ public sealed class InspectionNavigationRunner : MonoBehaviour
         Check(!probe.CameraActive && !history.IsRemarking && history.IsOpen, "cancel remark stops camera and returns detail");
         form.ShowHome(); history.Hide();
         Check(!history.IsOpen && !history.Busy, "navigation can cancel loading");
+        var local = form.GetComponent<LocalReports>();
+        local.enabled = false;
+        var localEntry = local.Add("http://127.0.0.1:18082", "/api/reports",
+            "{\"title\":\"offline local\",\"description\":\"kept\",\"priority\":\"medium\",\"position\":{\"x\":0,\"y\":1,\"z\":2},\"snapshot\":\"iVBORw0KGgoAAAANSUhEUgAAACAAAAAwCAIAAAD/zu84AAAAL0lEQVR4nO3NQQkAAAgEsMtkHNMZ1RQ+hMH+S02fikAgEAgEAoFAIBAIBAKB4FOwoW0IakT/d2gAAAAASUVORK5CYII=\"}");
+        form.ShowHome(); yield return new WaitForSecondsRealtime(1);
+        var localButton = Array.Find(rows.GetComponentsInChildren<Button>(), button => button.GetComponentInChildren<Text>().text.Contains("offline local"));
+        Check(localButton != null, "home includes durable local record");
+        localButton.onClick.Invoke();
+        Check(local.IsOpen && Field<InputField>(local, "title").interactable && !probe.CameraActive, "unsent local detail opens editable without camera");
+        Check(Field<RawImage>(local, "photo").texture.width == 32, "local detail reads persisted snapshot");
+        Field<InputField>(local, "title").text = "edited offline";
+        Field<Button>(local, "save").onClick.Invoke();
+        yield return new WaitForSecondsRealtime(1);
+        var localQueue = new ReportQueue(Path.Combine(Application.persistentDataPath, "report-queue-v1"));
+        Check(JsonUtility.FromJson<LocalReports.Payload>(localQueue.Get(localEntry.key).body).title == "edited offline", "local edit persists through public queue");
+        localQueue.BeginSend(localEntry.key); history.RefreshLocalRows(); yield return null;
+        localButton = Array.Find(rows.GetComponentsInChildren<Button>(), button => button.GetComponentInChildren<Text>().text.Contains("edited offline"));
+        localButton.onClick.Invoke();
+        Check(!Field<InputField>(local, "title").interactable && !Field<Button>(local, "save").interactable, "started local report is read only");
+        local.Hide(); history.Hide();
         const string frozen = "{\"title\":\"pending A\",\"description\":\"original\",\"priority\":\"medium\",\"position\":{\"x\":1,\"y\":2,\"z\":3}}";
         var pending = "{\"key\":\"frozen-key\",\"server\":\"http://127.0.0.1:18081\",\"body\":\"" + frozen.Replace("\"", "\\\"") + "\"}";
         PlayerPrefs.SetString("arwork.pending-report", pending); Call(form, "RestorePending");
-        Check(Field<InputField>(form, "title").text == "pending A", "legacy pending report restores its content");
-        Check(PlayerPrefs.GetString("arwork.server") == "http://127.0.0.1:18082", "pending restore does not switch active service");
-        Call(form, "BeginReport");
-        Check(!probe.CameraActive && Field<GameObject>(form, "reportPanel").activeSelf, "pending retry opens form without camera");
-        Field<Button>(form, "submit").onClick.Invoke(); yield return new WaitForSecondsRealtime(1);
-        Check(lastPostPort == 18081 && lastPostKey == "frozen-key" && lastPostBody == frozen, "retry preserves original server key and exact body");
-        Check(!PlayerPrefs.HasKey("arwork.pending-report"), "confirmed receipt clears pending request");
+        var queue = new ReportQueue(Path.Combine(Application.persistentDataPath, "report-queue-v1"));
+        var migrated = queue.Get("frozen-key");
+        Check(migrated.body == frozen && migrated.frozen && migrated.server == "http://127.0.0.1:18081", "legacy pending migrates with frozen body and original server");
+        Check(PlayerPrefs.GetString("arwork.server") == "http://127.0.0.1:18082", "migration does not switch active service");
+        Check(!PlayerPrefs.HasKey("arwork.pending-report"), "durable migration clears legacy preference");
+        form.ShowHome(); yield return new WaitForSecondsRealtime(1);
+        Check(lastPostPort == 0, "another service never uploads migrated request");
+
     }
 }
