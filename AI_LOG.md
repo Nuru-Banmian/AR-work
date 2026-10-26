@@ -728,3 +728,14 @@
 - 保护已有 AGENTS.md、CONTEXT.md、docs/agents 和 AI_LOG 规格发布段落，不纳入本次提交；Unity 构建生成的无业务变化已恢复。现场截图、APK、工具和隔离验收数据保留在忽略目录。证据与边界见 docs/issue-4-acceptance.md。
 
 本次未实现重新标记、SSE、状态颜色或交付视频；未推送远程。
+
+## Issue #5 历史问题重新标记（2026-10-26）
+
+- 用户调用 implement #5，确认真实 HTTP API 测试边界及审查起点 d9e59fd；并协助真机解锁、竖直面及重启后扫描。
+- 实现独立 PATCH /position，只原子修改 position/updatedAt，保留最新内容和管理状态。Unity 从历史详情进入新选点，失败保持替代草稿，取消清理草稿，确认成功才替换同一服务器和 ID 的旧会话标记；历史坐标不渲染到新会话。
+- 首个位置 HTTP 测试先 404 后通过；新增 3 项真实 HTTP 行为测试，覆盖字段保护、重启、幂等原回执、校验、落盘失败及三类字段并发修改。最终全套 15 项顶层测试和既有 9 项非法创建子用例通过，go vet、前端严格 TypeScript/Vite 构建、Oxlint 通过。
+- 最终 Android ARM64/IL2CPP APK 构建及真机覆盖安装成功，18,024,066 字节，SHA-256 69dd02c59130ed60129372391df7002ef76cb68aa3c9e698819713fa99606876；ZIP CRC、7 库 16 KB 对齐、apksigner v2 验证通过。
+- 真机和真实网页使用隔离 Go :18086、.local/issue5-acceptance.json。相同 ID 07b5a9556b681d15a966d35695095a9b 通过水平面和竖直面重新标记；真实 500 后原记录不变，取消仅丢弃草稿。选点后网页改 resolved，再手机保存，状态保留且网页显示新坐标。
+- 同一墙面可见旧标记和替代草稿；取消后只剩旧标记，成功后旧标记移除只剩新标记。Go 和手机均重启后数据保留且没有历史方块恢复；新会话重新扫描、Depth 选点并保存同一 ID 成功，网页刷新显示新坐标。
+- code-review 两个独立只读代理分别审查 Standards 和 Spec。修复创建重试回执误删较新标记、暂存新建草稿未隐藏两项 P2；复核均无剩余发现。详情见 docs/issue-5-acceptance.md。
+- 保留用户已有 AGENTS.md、CONTEXT.md、docs/agents 及 AI_LOG 规格段落，只暂存本次 AI_LOG 追加。Unity 自动生成的无业务变化已恢复。未推送远程，未实现 SSE、状态颜色或视频；不声称精度及生产可用性。

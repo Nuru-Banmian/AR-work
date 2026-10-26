@@ -1,6 +1,6 @@
 # 园区巡检 AR 原型
 
-Unity 在小米 13 Pro 上选点并填写问题，通过 Go 保存，React 查看详情及修改状态。#2 提供最小闭环，#3 增加可靠重试、竖直面、处理状态和深度选点，#4 增加手机历史查询与内容编辑。术语见 `CONTEXT.md`，规格见 [Issue #1](https://github.com/Nuru-Banmian/AR-work/issues/1)，本次任务见 [Issue #4](https://github.com/Nuru-Banmian/AR-work/issues/4)。
+Unity 在小米 13 Pro 上选点并填写问题，通过 Go 保存，React 查看详情及修改状态。#2 提供最小闭环，#3 增加可靠重试、竖直面、处理状态和深度选点，#4 增加手机历史查询与内容编辑，#5 增加历史问题重新标记。术语见 `CONTEXT.md`，规格见 [Issue #1](https://github.com/Nuru-Banmian/AR-work/issues/1)，本次任务见 [Issue #5](https://github.com/Nuru-Banmian/AR-work/issues/5)。
 
 ## 实际版本
 
@@ -55,6 +55,8 @@ cd mobile/ar-probe
 7. 手机点击 `ALL ISSUES` 获取全部问题，点击一行重新查询详情；两页的 `REFRESH` 均查询后端。详情显示 ID、当前状态、时间和历史坐标。重启应用后仍可用保存的地址查询，不按历史坐标恢复 AR 标记。
 8. 详情中编辑标题、描述和优先级，点击 `SAVE CONTENT`。保存期间禁用重复操作，成功显示最新状态；网页刷新同一 ID 可见修改。手机仅提交内容字段，不覆盖网页修改的处理状态或位置；相同内容字段采用最后一次成功保存为准。
 9. 校验、连接、404 或 500 失败提示原因并保留草稿，可修正或重试；详情刷新更新状态并保留改动过的内容。`BACK TO LIST (KEEP DRAFT)` 和 `BACK TO AR` 保留当前应用内草稿，再进入同一服务器和 ID 可继续编辑；未修改内容时刷新加载最新内容。历史内容草稿不跨应用进程重启保存，退出前应成功保存。新建待确认请求仍按原规则跨重启保留。
+10. 历史详情点击 `REMARK IN AR`，重新扫描并点选地面或墙面。`SAVE POSITION` 只保存新位置；`CANCEL` 丢弃替代草稿。保存中锁定重复操作，确认成功后才移除同一服务器、同一 ID 的当前会话旧标记并保留新标记。新建问题尚未提交的标记暂存，返回后可继续编辑；历史内容草稿也保留。
+11. 保存明确返回 400/404/500 时原记录不变，替代标记仍为草稿；可重选、重试或取消。超时或回执损坏时结果可能已经落盘，界面明确提示取消后 `REFRESH` 核对；网络断线不能保证后端未保存。取消不发送位置请求。重启后需重新选点，历史坐标不会渲染到新 AR 会话。网页点击刷新显示最新坐标。
 
 表单和诊断使用英文，以减少设备字体差异。位置是当前 AR 会话的米制坐标，不是园区绝对位置；重启应用不会按历史坐标恢复标记。未提交的草稿只在运行中的应用保留；已经发起但尚未确认的请求会跨应用重启保留，直到收到成功结果。若出现幂等冲突或待确认请求损坏，保留应用数据并检查后端，不能清空后直接重建以免重复上报。
 
@@ -67,6 +69,7 @@ cd mobile/ar-probe
 | `GET /api/issues` | `200 {"data": issue[]}`，创建时间倒序、ID 稳定排序 |
 | `GET /api/issues/{id}` | `200 {"data": issue}`，未知 ID 返回 404 |
 | `PATCH /api/issues/{id}/content` | `200 {"data": issue}`；必传 title、description、priority，只修改内容及 updatedAt |
+| `PATCH /api/issues/{id}/position` | `200 {"data": issue}`；如 `{"position":{"x":0,"y":1,"z":2}}`，只修改位置及 updatedAt |
 | `PATCH /api/issues/{id}/status` | `200 {"data": issue}`，如 `{"status":"resolved"}`；status 仅 open / in_progress / resolved |
 
 创建请求（零坐标有效）：
@@ -83,6 +86,8 @@ cd mobile/ar-probe
 
 内容修改示例：`{"title":"复查漏水","description":"已补充现场情况","priority":"low"}`。三个字段均必传且不接受 null，描述允许空字符串；标题和优先级沿用创建校验。不接受 status、position、ID 或时间。无效内容返回 400、未知 ID 返回 404、持久化失败返回 500；失败不改变原记录。内容和状态修改在同一锁下读取当前记录并原子保存各自字段，原始创建幂等回执保留。
 
+位置修改必传 position.x/y/z，接受有限数值（含零），拒绝缺失/null、额外字段、非法 JSON、多对象和超过 64 KiB 的请求。位置、内容、状态在同一锁内读取最新记录并持久化各自字段，互不覆盖；同字段以最后成功保存为准。位置重试不会新建问题，但会再次更新 updatedAt；创建幂等回执仍保留创建时的位置。#5 的验证证据及待验收项见 [重新标记验收](docs/issue-5-acceptance.md)。
+
 ```powershell
 cd backend
 go test ./... -count=1
@@ -96,4 +101,4 @@ python verify_apk.py Builds/AR-Inspection.apk
 
 API 测试使用真实 HTTP 服务及临时文件，覆盖创建、参数校验、CORS、幂等并发/规范化/冲突、保存后响应丢失、重启重放、状态切换、内容独立修改及保存失败不修改内存。浏览器和真机证据见 [#2 验收](docs/issue-2-acceptance.md)、[#3 验收](docs/issue-3-acceptance.md)、[#4 验收](docs/issue-4-acceptance.md)。构建成功和 APK 校验不等于真机功能通过。
 
-后续任务尚未实现：手机重新标记、SSE、状态颜色、交付视频。不包含登录权限或公网部署。Depth 的接入和用户同机反馈不构成厘米级精度、白墙通用可靠性或长期跟踪保证；构建和真机验证分别记录。
+后续任务尚未实现：SSE、状态颜色、交付视频。不包含登录权限或公网部署。Depth 的接入和用户同机反馈不构成厘米级精度、白墙通用可靠性或长期跟踪保证；构建和真机验证分别记录。

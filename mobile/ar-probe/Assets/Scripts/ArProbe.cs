@@ -31,6 +31,10 @@ public sealed class ArProbe : MonoBehaviour
     private readonly List<RaycastResult> uiHits = new List<RaycastResult>();
     private int placements;
     private Vector3 lastPosition;
+    private readonly Dictionary<string, ARAnchor> savedMarkers = new Dictionary<string, ARAnchor>();
+    private GameObject suspendedMarker;
+    private ARAnchor suspendedAnchor;
+    private Vector3 suspendedPosition;
 
     private void Awake()
     {
@@ -269,12 +273,48 @@ public sealed class ArProbe : MonoBehaviour
     }
 
     public Vector3 CurrentPosition => markerAnchor != null ? markerAnchor.transform.position : lastPosition;
+    public bool HasTrackedDraft => markerAnchor != null && markerAnchor.trackingState == TrackingState.Tracking;
 
-    public void KeepSubmittedMarker()
+    public void KeepSubmittedMarker(string server, string id, bool replaceExisting = false)
     {
-        // The confirmed marker stays in this session; the next report gets a new anchor.
+        var key = server + "/" + id;
+        if (savedMarkers.TryGetValue(key, out var old) && old != null)
+        {
+            // An original creation receipt may arrive after a successful remark.
+            // Acknowledging that receipt must not replace the newer session marker.
+            if (!replaceExisting)
+            {
+                if (marker != null) Destroy(marker);
+                if (markerAnchor != null) Destroy(markerAnchor.gameObject);
+                marker = null; markerAnchor = null;
+                return;
+            }
+            Destroy(old.gameObject);
+        }
+        if (markerAnchor != null) savedMarkers[key] = markerAnchor;
         marker = null;
         markerAnchor = null;
+    }
+
+    public void BeginRemark()
+    {
+        suspendedMarker = marker; suspendedAnchor = markerAnchor; suspendedPosition = lastPosition;
+        if (suspendedMarker != null) suspendedMarker.SetActive(false);
+        marker = null; markerAnchor = null;
+    }
+
+    public void FinishRemark(bool saved, string server, string id)
+    {
+        if (saved) KeepSubmittedMarker(server, id, true);
+        else
+        {
+            if (marker != null) Destroy(marker);
+            if (markerAnchor != null) Destroy(markerAnchor.gameObject);
+        }
+        marker = suspendedMarker; markerAnchor = suspendedAnchor; lastPosition = suspendedPosition;
+        if (marker != null) marker.SetActive(true);
+        suspendedMarker = null; suspendedAnchor = null;
+        notice.text = saved ? "Replacement saved. Previous session marker removed." : "Replacement draft discarded. Saved marker kept.";
     }
 
     private void CreateUi()

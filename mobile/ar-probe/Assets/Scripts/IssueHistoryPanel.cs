@@ -6,7 +6,7 @@ using UnityEngine;
 using UnityEngine.Networking;
 using UnityEngine.UI;
 
-// Historical coordinates are display-only. This screen never creates an AR marker.
+// Historical coordinates are display-only; remarking always requires a fresh AR hit.
 public sealed class IssueHistoryPanel : MonoBehaviour
 {
     [Serializable] private sealed class Position { public float x, y, z; }
@@ -17,10 +17,18 @@ public sealed class IssueHistoryPanel : MonoBehaviour
     [Serializable] private sealed class IssueResult { public Issue data; }
     [Serializable] private sealed class IssueList { public Issue[] data; }
     [Serializable] private sealed class Content { public string title, description, priority; }
+    [Serializable] private sealed class Location { public Position position; }
     [Serializable] private sealed class ApiError { public string code, message; }
     [Serializable] private sealed class Failure { public ApiError error; }
 
-    public bool IsOpen => panel != null && panel.activeSelf;
+    public bool IsOpen => IsRemarking || (panel != null && panel.activeSelf);
+    public bool IsRemarking { get; private set; }
+    public bool RemarkLocked => busy;
+    private ArProbe probe;
+    private GameObject remarkPanel;
+    private Text remarkMessage;
+    private Button remark, confirmRemark, cancelRemark;
+    private bool hasRemarkPosition;
     private GameObject panel, listPage, detailPage;
     private RectTransform rows;
     private Text message, metadata, priorityLabel;
@@ -35,8 +43,9 @@ public sealed class IssueHistoryPanel : MonoBehaviour
     // A draft remains attached to its server and ID when navigating or retrying.
     private readonly Dictionary<string, Content> drafts = new Dictionary<string, Content>();
 
-    public void Initialize(Transform parent, Action returnToReport)
+    public void Initialize(Transform parent, ArProbe owner, Action returnToReport)
     {
+        probe = owner;
         onClose = returnToReport;
         panel = new GameObject("All issues", typeof(RectTransform), typeof(Image));
         panel.transform.SetParent(parent, false);
@@ -68,7 +77,8 @@ public sealed class IssueHistoryPanel : MonoBehaviour
         back = IssueReportForm.ButtonAt(detail, "BACK TO LIST (KEEP DRAFT)", 0, 0.03f, 0.97f, () => {
             KeepDraft(); selectedId = null; ShowPage(); StartCoroutine(Load());
         });
-        save = IssueReportForm.ButtonAt(detail, "SAVE CONTENT", 80, 0.03f, 0.97f, () => StartCoroutine(Save()));
+        save = IssueReportForm.ButtonAt(detail, "SAVE CONTENT", 80, 0.03f, 0.48f, () => StartCoroutine(Save()));
+        remark = IssueReportForm.ButtonAt(detail, "REMARK IN AR", 80, 0.52f, 0.97f, BeginRemark);
         priority = IssueReportForm.ButtonAt(detail, "Priority", 160, 0.03f, 0.97f, () => {
             priorityIndex = (priorityIndex + 1) % priorities.Length;
             priorityLabel.text = "Priority: " + priorities[priorityIndex]; KeepDraft();
@@ -84,6 +94,19 @@ public sealed class IssueHistoryPanel : MonoBehaviour
         title.onValueChanged.AddListener(_ => KeepDraft());
         description.onValueChanged.AddListener(_ => KeepDraft());
         panel.SetActive(false);
+        remarkPanel = new GameObject("Remark controls", typeof(RectTransform), typeof(Image));
+        remarkPanel.transform.SetParent(parent, false);
+        remarkPanel.GetComponent<Image>().color = new Color(0.02f, 0.05f, 0.08f, 0.94f);
+        var controls = remarkPanel.GetComponent<RectTransform>();
+        controls.anchorMin = controls.anchorMax = new Vector2(0.5f, 0);
+        controls.pivot = new Vector2(0.5f, 0); controls.sizeDelta = new Vector2(1080, 360);
+        controls.anchoredPosition = new Vector2(0, 130);
+        cancelRemark = IssueReportForm.ButtonAt(controls, "CANCEL", 15, 0.03f, 0.48f, () => EndRemark(false));
+        confirmRemark = IssueReportForm.ButtonAt(controls, "SAVE POSITION", 15, 0.52f, 0.97f, () => StartCoroutine(SavePosition()));
+        remarkMessage = IssueReportForm.Label(controls, 27);
+        remarkMessage.rectTransform.offsetMin = new Vector2(25, 95);
+        remarkMessage.rectTransform.offsetMax = new Vector2(-25, -15);
+        remarkPanel.SetActive(false);
     }
 
     private static GameObject Page(Transform parent, string name)
@@ -128,6 +151,9 @@ public sealed class IssueHistoryPanel : MonoBehaviour
         busy = value;
         close.interactable = back.interactable = refresh.interactable = !value;
         save.interactable = priority.interactable = title.interactable = description.interactable = !value && detailLoaded;
+        remark.interactable = !value && detailLoaded;
+        cancelRemark.interactable = !value;
+        confirmRemark.interactable = !value && hasRemarkPosition;
         foreach (var button in rows.GetComponentsInChildren<Button>()) button.interactable = !value;
     }
 
@@ -231,6 +257,70 @@ public sealed class IssueHistoryPanel : MonoBehaviour
             }
         }
         SetBusy(false);
+    }
+
+    private void BeginRemark()
+    {
+        if (busy || !detailLoaded || selectedId == null) return;
+        KeepDraft(); probe.BeginRemark(); hasRemarkPosition = false; IsRemarking = true;
+        panel.SetActive(false); remarkPanel.SetActive(true); SetBusy(false);
+        remarkMessage.text = "Remark ID: " + selectedId + "\nTap a floor or wall to select a NEW position. Old saved marker stays until success. Content draft kept.";
+    }
+
+    public void MarkPositionSelected()
+    {
+        hasRemarkPosition = true; confirmRemark.interactable = !busy;
+        remarkMessage.text = "Replacement DRAFT for ID: " + selectedId + "\nPosition (m): " + probe.CurrentPosition.ToString("F3") + "\nSAVE POSITION to replace, or CANCEL to discard.";
+    }
+
+    public void ClearPosition()
+    {
+        hasRemarkPosition = false; confirmRemark.interactable = false;
+        remarkMessage.text = "Replacement draft cleared. Tap a floor or wall. Original saved marker kept.";
+    }
+
+    private void EndRemark(bool saved)
+    {
+        if (busy) return;
+        probe.FinishRemark(saved, server, selectedId); IsRemarking = false;
+        hasRemarkPosition = false; remarkPanel.SetActive(false); panel.SetActive(true);
+        if (!saved) message.text = "Replacement draft discarded. REFRESH to check latest saved position.";
+    }
+
+    private IEnumerator SavePosition()
+    {
+        if (busy || !IsRemarking || !hasRemarkPosition) yield break;
+        if (UnityEngine.XR.ARFoundation.ARSession.state != UnityEngine.XR.ARFoundation.ARSessionState.SessionTracking || !probe.HasTrackedDraft)
+        { remarkMessage.text = "Tracking unavailable. Scan the surface again before saving."; yield break; }
+        var point = probe.CurrentPosition;
+        var body = JsonUtility.ToJson(new Location { position = new Position { x = point.x, y = point.y, z = point.z } });
+        bool succeeded = false;
+        SetBusy(true); remarkMessage.text = "Saving replacement position...";
+        using (var request = new UnityWebRequest(Endpoint + "/position", "PATCH"))
+        {
+            request.uploadHandler = new UploadHandlerRaw(Encoding.UTF8.GetBytes(body));
+            request.downloadHandler = new DownloadHandlerBuffer();
+            request.SetRequestHeader("Content-Type", "application/json"); request.timeout = 15;
+            yield return request.SendWebRequest();
+            if (request.result != UnityWebRequest.Result.Success)
+                remarkMessage.text = Error(request) + " Replacement remains a DRAFT. Retry or cancel and REFRESH; a lost response may already have saved.";
+            else
+            {
+                try
+                {
+                    var issue = JsonUtility.FromJson<IssueResult>(request.downloadHandler.text)?.data;
+                    RequireIssue(issue);
+                    if (issue.position.x != point.x || issue.position.y != point.y || issue.position.z != point.z)
+                        throw new ArgumentException("Position mismatch");
+                    RenderDetail(issue); succeeded = true;
+                    message.text = "Position saved. ID: " + issue.id + ". Status: " + issue.status + ". Content draft kept.";
+                    Debug.Log("ARWORK_REMARK_SAVED_ID=" + issue.id);
+                }
+                catch (ArgumentException) { remarkMessage.text = "Save result uncertain. Replacement remains a DRAFT. Retry or cancel and REFRESH to check saved position."; }
+            }
+        }
+        SetBusy(false);
+        if (succeeded) EndRemark(true);
     }
 
     private static string Error(UnityWebRequest request)

@@ -19,7 +19,7 @@ public sealed class IssueReportForm : MonoBehaviour
     private const string PendingPreference = "arwork.pending-report";
 
     private bool positionLocked;
-    public bool PositionLocked { get => positionLocked || (history != null && history.IsOpen); private set => positionLocked = value; }
+    public bool PositionLocked { get => history != null && history.IsRemarking ? history.RemarkLocked : positionLocked || (history != null && history.IsOpen); private set => positionLocked = value; }
     private IssueHistoryPanel history;
     private ArProbe probe;
     private InputField address, title, description;
@@ -42,7 +42,7 @@ public sealed class IssueReportForm : MonoBehaviour
         rect.pivot = new Vector2(0.5f, 0); rect.sizeDelta = new Vector2(0, 795);
         rect.anchoredPosition = new Vector2(0, 130);
         history = gameObject.AddComponent<IssueHistoryPanel>();
-        history.Initialize(parent, () => panel.SetActive(true));
+        history.Initialize(parent, probe, () => panel.SetActive(true));
         historyButton = ButtonAt(rect, "ALL ISSUES", 725, 0.03f, 0.97f, () => {
             if (busy || !SaveAddress()) return;
             panel.SetActive(false);
@@ -98,8 +98,8 @@ public sealed class IssueReportForm : MonoBehaviour
         }
     }
 
-    public void MarkPositionSelected() { hasPosition = true; }
-    public void ClearPosition() { hasPosition = false; RefreshControls(); }
+    public void MarkPositionSelected() { if (history != null && history.IsRemarking) history.MarkPositionSelected(); else hasPosition = true; }
+    public void ClearPosition() { if (history != null && history.IsRemarking) history.ClearPosition(); else { hasPosition = false; RefreshControls(); } }
 
     private void EditOrCancel()
     {
@@ -179,7 +179,7 @@ public sealed class IssueReportForm : MonoBehaviour
                 try { issue = JsonUtility.FromJson<Success>(request.downloadHandler.text)?.data; } catch (ArgumentException) { }
                 if (issue != null && !string.IsNullOrEmpty(issue.id))
                 {
-                    saved = true; probe.KeepSubmittedMarker();
+                    saved = true; probe.KeepSubmittedMarker(requestAddress, issue.id);
                     PlayerPrefs.DeleteKey(PendingPreference); PlayerPrefs.Save();
                     message.text = "Saved ID: " + issue.id + "\n" + issue.title + " | " + issue.priority + " | " + issue.status;
                     Debug.Log("ARWORK_SAVED_ID=" + issue.id);
