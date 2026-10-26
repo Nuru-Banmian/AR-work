@@ -148,12 +148,13 @@ func (a *api) issue(w http.ResponseWriter, r *http.Request) {
 	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/issues/"), "/")
 	detail := len(parts) == 1 && parts[0] != ""
 	status := len(parts) == 2 && parts[0] != "" && parts[1] == "status"
-	if !detail && !status {
+	content := len(parts) == 2 && parts[0] != "" && parts[1] == "content"
+	if !detail && !status && !content {
 		fail(w, 404, "not_found", "Endpoint not found")
 		return
 	}
-	if (detail && r.Method != "GET") || (status && r.Method != "PATCH") {
-		fail(w, 405, "method_not_allowed", "Use GET for details or PATCH for status")
+	if (detail && r.Method != "GET") || ((status || content) && r.Method != "PATCH") {
+		fail(w, 405, "method_not_allowed", "Use GET for details or PATCH for status/content")
 		return
 	}
 	var input struct {
@@ -175,20 +176,51 @@ func (a *api) issue(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	var edit struct {
+		Title       *string `json:"title"`
+		Description *string `json:"description"`
+		Priority    *string `json:"priority"`
+	}
+	if content {
+		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64*1024))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&edit); err != nil {
+			fail(w, 400, "invalid_argument", "Body must contain title, description and priority only")
+			return
+		}
+		if err := decoder.Decode(new(any)); err != io.EOF {
+			fail(w, 400, "invalid_argument", "Body must contain one JSON object")
+			return
+		}
+		if edit.Title == nil || strings.TrimSpace(*edit.Title) == "" || edit.Description == nil || edit.Priority == nil {
+			fail(w, 400, "invalid_argument", "Nonblank title, description and priority are required")
+			return
+		}
+		if *edit.Priority != "low" && *edit.Priority != "medium" && *edit.Priority != "high" {
+			fail(w, 400, "invalid_argument", "priority must be low, medium or high")
+			return
+		}
+	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	for index, issue := range a.issues {
 		if issue.ID != parts[0] {
 			continue
 		}
-		if status {
-			issue.Status = input.Status
+		if status || content {
+			if status {
+				issue.Status = input.Status
+			} else {
+				issue.Title = strings.TrimSpace(*edit.Title)
+				issue.Description = *edit.Description
+				issue.Priority = *edit.Priority
+			}
 			issue.UpdatedAt = time.Now().UTC()
 			next := append([]Issue{}, a.issues...)
 			next[index] = issue
 			if err := saveIssues(a.path, snapshot{next, a.requests}); err != nil {
-				log.Printf("save status: %v", err)
-				fail(w, 500, "storage_error", "Could not save status; data was not changed")
+				log.Printf("save issue: %v", err)
+				fail(w, 500, "storage_error", "Could not save issue; data was not changed")
 				return
 			}
 			a.issues = next
