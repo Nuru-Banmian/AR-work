@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -25,6 +26,7 @@ type Position struct {
 }
 
 type Issue struct {
+	SnapshotURL string    `json:"snapshotUrl,omitempty"`
 	ID          string    `json:"id"`
 	Title       string    `json:"title"`
 	Description string    `json:"description"`
@@ -38,6 +40,7 @@ type Issue struct {
 type api struct {
 	mu          sync.Mutex
 	path        string
+	media       map[string][]byte
 	issues      []Issue
 	origins     map[string]bool
 	requests    map[string]creation
@@ -51,12 +54,13 @@ type creation struct {
 }
 
 type snapshot struct {
+	Media    map[string][]byte   `json:"media,omitempty"`
 	Issues   []Issue             `json:"issues"`
 	Requests map[string]creation `json:"requests"`
 }
 
 func newAPI(path, allowedOrigins string) (http.Handler, error) {
-	a := &api{path: path, issues: []Issue{}, origins: map[string]bool{}, requests: map[string]creation{}, subscribers: map[chan struct{}]bool{}}
+	a := &api{media: map[string][]byte{}, path: path, issues: []Issue{}, origins: map[string]bool{}, requests: map[string]creation{}, subscribers: map[chan struct{}]bool{}}
 	for _, origin := range strings.Split(allowedOrigins, ",") {
 		a.origins[strings.TrimSpace(origin)] = true
 	}
@@ -69,6 +73,9 @@ func newAPI(path, allowedOrigins string) (http.Handler, error) {
 			var stored snapshot
 			err = json.Unmarshal(data, &stored)
 			a.issues = stored.Issues
+			if stored.Media != nil {
+				a.media = stored.Media
+			}
 			if stored.Requests != nil {
 				a.requests = stored.Requests
 			}
@@ -120,6 +127,12 @@ func (a *api) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		respond(w, 200, map[string]any{"data": map[string]string{"status": "ok"}})
+	case "/api/reports":
+		if r.Method != "POST" {
+			fail(w, 405, "method_not_allowed", "Use POST")
+			return
+		}
+		a.create(w, r)
 	case "/api/issues":
 		switch r.Method {
 		case "GET":
@@ -148,6 +161,10 @@ func (a *api) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *api) issue(w http.ResponseWriter, r *http.Request) {
+	if strings.HasSuffix(r.URL.Path, "/snapshot") {
+		a.readSnapshot(w, r)
+		return
+	}
 	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/issues/"), "/")
 	detail := len(parts) == 1 && parts[0] != ""
 	status := len(parts) == 2 && parts[0] != "" && parts[1] == "status"
@@ -205,11 +222,18 @@ func (a *api) issue(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	var replacement []byte
 	var location struct {
+		Snapshot string                      `json:"snapshot"`
 		Position *struct{ X, Y, Z *float64 } `json:"position"`
 	}
 	if position {
-		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64*1024))
+		body, readErr := io.ReadAll(http.MaxBytesReader(w, r.Body, 12*1024*1024))
+		if readErr != nil {
+			fail(w, 400, "invalid_argument", "Request body is too large")
+			return
+		}
+		decoder := json.NewDecoder(bytes.NewReader(body))
 		decoder.DisallowUnknownFields()
 		if err := decoder.Decode(&location); err != nil {
 			fail(w, 400, "invalid_argument", "Body must contain position{x,y,z} only")
@@ -217,6 +241,10 @@ func (a *api) issue(w http.ResponseWriter, r *http.Request) {
 		}
 		if err := decoder.Decode(new(any)); err != io.EOF {
 			fail(w, 400, "invalid_argument", "Body must contain one JSON object")
+			return
+		}
+		if location.Snapshot == "" && len(body) > 64*1024 {
+			fail(w, 400, "invalid_argument", "Position request without snapshot must be at most 64 KiB")
 			return
 		}
 		if location.Position == nil || location.Position.X == nil || location.Position.Y == nil || location.Position.Z == nil {
@@ -236,6 +264,20 @@ func (a *api) issue(w http.ResponseWriter, r *http.Request) {
 		if issue.ID != parts[0] {
 			continue
 		}
+		media := a.media
+		if position {
+			var err error
+			replacement, err = validateSnapshot(location.Snapshot, issue.SnapshotURL != "")
+			if err != nil {
+				fail(w, 400, "invalid_snapshot", err.Error())
+				return
+			}
+			if len(replacement) > 0 {
+				media = cloneMedia(a.media)
+				media[issue.ID] = replacement
+				issue.SnapshotURL = "/api/issues/" + issue.ID + "/snapshot"
+			}
+		}
 		if status || content || position {
 			if status {
 				issue.Status = input.Status
@@ -249,12 +291,13 @@ func (a *api) issue(w http.ResponseWriter, r *http.Request) {
 			issue.UpdatedAt = time.Now().UTC()
 			next := append([]Issue{}, a.issues...)
 			next[index] = issue
-			if err := saveIssues(a.path, snapshot{next, a.requests}); err != nil {
+			if err := saveIssues(a.path, snapshot{Issues: next, Requests: a.requests, Media: media}); err != nil {
 				log.Printf("save issue: %v", err)
 				fail(w, 500, "storage_error", "Could not save issue; data was not changed")
 				return
 			}
 			a.issues = next
+			a.media = media
 			a.notifySaved()
 		}
 		respond(w, 200, map[string]any{"data": issue})
@@ -265,12 +308,18 @@ func (a *api) issue(w http.ResponseWriter, r *http.Request) {
 
 func (a *api) create(w http.ResponseWriter, r *http.Request) {
 	var input struct {
+		Snapshot    string                      `json:"snapshot"`
 		Title       string                      `json:"title"`
 		Description string                      `json:"description"`
 		Priority    string                      `json:"priority"`
 		Position    *struct{ X, Y, Z *float64 } `json:"position"`
 	}
-	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64*1024))
+	body, readErr := io.ReadAll(http.MaxBytesReader(w, r.Body, 12*1024*1024))
+	if readErr != nil {
+		fail(w, 400, "invalid_argument", "Request body is too large")
+		return
+	}
+	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&input); err != nil {
 		fail(w, 400, "invalid_argument", "Body must be valid JSON with title, description, priority and position{x,y,z}")
@@ -278,6 +327,10 @@ func (a *api) create(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := decoder.Decode(new(any)); err != io.EOF {
 		fail(w, 400, "invalid_argument", "Body must contain exactly one JSON object")
+		return
+	}
+	if input.Snapshot == "" && len(body) > 64*1024 {
+		fail(w, 400, "invalid_argument", "Request without snapshot must be at most 64 KiB")
 		return
 	}
 	input.Title = strings.TrimSpace(input.Title)
@@ -299,6 +352,11 @@ func (a *api) create(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	photo, err := validateSnapshot(input.Snapshot, r.URL.Path == "/api/reports")
+	if err != nil {
+		fail(w, 400, "invalid_snapshot", err.Error())
+		return
+	}
 	id := make([]byte, 16)
 	if _, err := rand.Read(id); err != nil {
 		fail(w, 500, "internal_error", "Could not create issue")
@@ -307,6 +365,9 @@ func (a *api) create(w http.ResponseWriter, r *http.Request) {
 	now := time.Now().UTC()
 	issue := Issue{ID: hex.EncodeToString(id), Title: input.Title, Description: input.Description, Priority: input.Priority,
 		Status: "open", Position: Position{*input.Position.X, *input.Position.Y, *input.Position.Z}, CreatedAt: now, UpdatedAt: now}
+	if len(photo) > 0 {
+		issue.SnapshotURL = "/api/issues/" + issue.ID + "/snapshot"
+	}
 	// Signed zero is the same location and must not produce a different replay fingerprint.
 	for _, coordinate := range []*float64{&issue.Position.X, &issue.Position.Y, &issue.Position.Z} {
 		if *coordinate == 0 {
@@ -318,7 +379,8 @@ func (a *api) create(w http.ResponseWriter, r *http.Request) {
 		Description string
 		Priority    string
 		Position    Position
-	}{issue.Title, issue.Description, issue.Priority, issue.Position})
+		Snapshot    string `json:",omitempty"`
+	}{issue.Title, issue.Description, issue.Priority, issue.Position, input.Snapshot})
 	digest := sha256.Sum256(canonical)
 	fingerprint := hex.EncodeToString(digest[:])
 	key := r.Header.Get("Idempotency-Key")
@@ -344,13 +406,18 @@ func (a *api) create(w http.ResponseWriter, r *http.Request) {
 	if key != "" {
 		nextRequests[key] = creation{fingerprint, issue}
 	}
-	if err := saveIssues(a.path, snapshot{next, nextRequests}); err != nil {
+	nextMedia := cloneMedia(a.media)
+	if len(photo) > 0 {
+		nextMedia[issue.ID] = photo
+	}
+	if err := saveIssues(a.path, snapshot{Issues: next, Requests: nextRequests, Media: nextMedia}); err != nil {
 		log.Printf("save issues: %v", err)
 		fail(w, 500, "storage_error", "Could not save issue; data was not changed")
 		return
 	}
 	a.issues = next
 	a.requests = nextRequests
+	a.media = nextMedia
 	a.notifySaved()
 	respond(w, 201, map[string]any{"data": issue})
 }

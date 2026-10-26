@@ -91,6 +91,12 @@ public sealed class InspectionNavigationRunner : MonoBehaviour
                     var context = await fixture.GetContextAsync();
                     var request = context.Request; string source = request.Url.Port == 18081 ? "A" : "B";
                     string issue = "{\"id\":\"same-id\",\"title\":\"Server " + source + "\",\"description\":\"fixture\",\"priority\":\"medium\",\"status\":\"in_progress\",\"position\":{\"x\":1,\"y\":2,\"z\":3}}";
+                    if (source == "A") issue = issue.Substring(0, issue.Length - 1) + ",\"snapshotUrl\":\"/api/issues/same-id/snapshot\"}";
+                    if (request.Url.AbsolutePath.EndsWith("/snapshot")) {
+                        var photo = Convert.FromBase64String("iVBORw0KGgoAAAANSUhEUgAAACAAAAAwCAIAAAD/zu84AAAAL0lEQVR4nO3NQQkAAAgEsMtkHNMZ1RQ+hMH+S02fikAgEAgEAoFAIBAIBAKB4FOwoW0IakT/d2gAAAAASUVORK5CYII=");
+                        context.Response.ContentType = "image/png";
+                        context.Response.OutputStream.Write(photo, 0, photo.Length); context.Response.Close(); continue;
+                    }
                     string body = request.Url.AbsolutePath == "/api/issues" && request.HttpMethod == "GET" ? "{\"data\":[" + issue + "]}" : "{\"data\":" + issue + "}";
                     if (request.HttpMethod == "POST")
                     {
@@ -124,6 +130,15 @@ public sealed class InspectionNavigationRunner : MonoBehaviour
         Check(rows.childCount == 1 && rows.GetComponentInChildren<Text>().text.Contains("Server A"), "homepage reads HTTP records");
         rows.GetComponentInChildren<Button>().onClick.Invoke(); yield return new WaitForSecondsRealtime(1);
         Check(Field<InputField>(history, "title").text == "Server A", "detail loads without camera");
+        yield return new WaitForSecondsRealtime(1);
+        var photoArea = GameObject.Find("现场照片");
+        var photoImage = photoArea.GetComponentInChildren<RawImage>();
+        Check(photoImage.texture != null && photoImage.texture.width == 32 && photoImage.texture.height == 48, "detail downloads associated photo with real HTTP");
+        photoArea.transform.Find("查看大图").GetComponent<Button>().onClick.Invoke();
+        var photoViewer = GameObject.Find("现场照片大图");
+        Check(photoViewer != null && photoViewer.GetComponentInChildren<RawImage>().texture != null && !probe.CameraActive, "photo opens full size without starting camera");
+        photoViewer.transform.Find("关闭大图").GetComponent<Button>().onClick.Invoke();
+        Check(!photoViewer.activeSelf, "photo viewer closes back to record");
         Field<InputField>(history, "title").text = "unsaved draft A";
         history.Hide(); form.ShowHome(); yield return new WaitForSecondsRealtime(1);
         rows.GetComponentInChildren<Button>().onClick.Invoke(); yield return new WaitForSecondsRealtime(1);
@@ -135,6 +150,7 @@ public sealed class InspectionNavigationRunner : MonoBehaviour
         Check(rows.GetComponentInChildren<Text>().text.Contains("Server B"), "new service reads its own records");
         rows.GetComponentInChildren<Button>().onClick.Invoke(); yield return new WaitForSecondsRealtime(1);
         Check(Field<InputField>(history, "title").text == "Server B", "same ID on another service does not inherit draft");
+        Check(GameObject.Find("现场照片").GetComponentInChildren<RawImage>().texture == null, "legacy record does not show previous server photo");
         Check(!probe.CameraActive, "all browsing leaves camera stopped");
         history.Hide(); Field<InputField>(form, "address").text = "file:///invalid";
         Check(!(bool)Call(form, "SaveAddress"), "invalid service is rejected");
