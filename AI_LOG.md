@@ -509,3 +509,19 @@
 
 - 采用
 - 将该版本作为用户报告的信息记录，未独立读取手机核实；不依据版本字符串推断确切 Android 版本或 ARCore 运行结果。继续索取设置中显示的 Android 版本和 AR 服务安装状态，真机平面检测仍待执行。
+
+## P-013
+
+- 目标：用户补充 Android 版本与 AR 服务查找结果，确定下一步安装检查
+
+### Prompt 原文
+
+> Android 版本：16
+> AR 服务：未找到
+
+### 结果
+
+- 采用
+- 记录用户报告的 Android 16 与“未找到”服务；未将“未找到”直接认定为手机不支持 AR。核对 Google Play 官方应用页，确认应用名 Google Play Services for AR、开发者 Google LLC、包名 com.google.ar.core；依据此前核查的 Google 中国区渠道说明，引导先在小米应用商店查找，已有 Google Play 时使用官方应用链接。小米商店网页未能由浏览工具打开，因此不声称已确认该手机商店当前可安装。仍需用户反馈安装结果，再运行 Unity 平面检测测试。
+
+核查来源：[Google Play 官方应用页](https://play.google.com/store/apps/details?id=com.google.ar.core)、[Google 官方中国区设备与渠道说明](https://developers.google.com/ar/devices#android_china)。
