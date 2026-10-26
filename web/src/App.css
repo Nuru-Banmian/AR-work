@@ -13,3 +13,13 @@ article p { white-space: pre-wrap; overflow-wrap: anywhere; } .row { display: fl
 .id { font-size: 12px; color: #566761; font-family: monospace; } dt { font-size: 12px; color: #566761; margin-top: 12px; } dd { margin: 4px 0; overflow-wrap: anywhere; } .empty { padding: 40px; background: white; border-radius: 12px; }
 select { margin-top: 16px; padding: 10px; border: 1px solid #aabbb6; border-radius: 8px; background: white; font: inherit; }
 select:focus-visible { outline: 3px solid #e59932; outline-offset: 3px; }
+
+.snapshot img { display: block; width: 100%; height: 200px; object-fit: contain; background: #10231e; }
+.photo-button { width: 100%; padding: 0; overflow: hidden; margin-bottom: 16px; }
+dialog[open] { position: fixed; inset: 4vh 4vw; width: auto; height: auto; margin: 0; z-index: 10; background: #14231f; color: white; border: 2px solid #aabbb6; overflow: auto; }
+.snapshot dialog img { height: calc(80vh - 60px); margin-top: 12px; }
+.content-editor { display: grid; gap: 12px; margin-top: 16px; }
+.content-editor label { display: grid; gap: 6px; }
+.content-editor input { min-width: 0; }
+textarea { resize: vertical; min-height: 100px; padding: 10px; font: inherit; }
+.content-editor select { margin-top: 0; }

@@ -1,12 +1,30 @@
 import { useEffect, useState } from 'react'
-import { errorMessage, listIssues, serverAddress, updateStatus, type Issue } from './api'
+import { errorMessage, listIssues, serverAddress, updateStatus, updateContent, type Issue } from './api'
 import './App.css'
 
 const priorityNames = { low: '低', medium: '中', high: '高' }
 const statusNames = { open: '待处理', in_progress: '处理中', resolved: '已解决' }
 
 function IssueCard({ issue, address, onSaved }: { issue: Issue; address: string; onSaved: () => void }) {
+  const [draft, setDraft] = useState<Pick<Issue, 'title' | 'description' | 'priority'> | null>(null)
+  const [expanded, setExpanded] = useState(false)
+  const [failedPhoto, setFailedPhoto] = useState('')
+  const [imageRetry, setImageRetry] = useState(0)
   const [saving, setSaving] = useState(false)
+  const photo = `${serverAddress(address)}/api/issues/${encodeURIComponent(issue.id)}/snapshot?v=${encodeURIComponent(issue.updatedAt)}&retry=${imageRetry}`
+  const imageError = failedPhoto === photo
+
+  async function saveContent(event: React.FormEvent) {
+    event.preventDefault()
+    if (!draft || saving) return
+    if (!draft.title.trim()) { setError('请填写问题标题'); return }
+    setSaving(true); setError(''); setMessage('')
+    try {
+      await updateContent(address, issue.id, { ...draft, title: draft.title.trim() })
+      setDraft(null); onSaved(); setMessage('内容已保存')
+    } catch (reason) { setError(`保存失败：${errorMessage(reason)}。草稿已保留，可重试。`) }
+    finally { setSaving(false) }
+  }
   const [message, setMessage] = useState('')
   const [error, setError] = useState('')
 
@@ -28,11 +46,23 @@ function IssueCard({ issue, address, onSaved }: { issue: Issue; address: string;
     <div className="row"><span className={`priority ${issue.priority}`}>{priorityNames[issue.priority]}优先级</span><span>{statusNames[issue.status]}</span></div>
     <h2>{issue.title}</h2><p className="id">编号：{issue.id}</p>
     <p>{issue.description || '未填写描述'}</p>
+    {issue.snapshotUrl ? <div className="snapshot">
+      {imageError ? <p role="alert">图片加载失败。<button onClick={() => { setImageRetry(value => value + 1) }}>重试图片</button></p> :
+        <button className="photo-button" aria-label={`${issue.title} 查看现场大图`} onClick={() => setExpanded(true)}><img src={photo} alt={`${issue.title} 现场快照`} onError={() => setFailedPhoto(photo)} /></button>}
+      {expanded && <dialog open aria-label="现场大图"><button autoFocus onClick={() => setExpanded(false)}>关闭大图</button><img src={photo} alt={`${issue.title} 现场大图`} onError={() => setFailedPhoto(photo)} />{imageError && <p role="alert">图片加载失败，请关闭后重试。</p>}</dialog>}
+    </div> : <p>无快照（旧记录，可在手机现场补采）</p>}
+    {draft ? <form className="content-editor" onSubmit={event => { void saveContent(event) }}>
+      <label>标题<input aria-label={`${issue.title} 标题`} value={draft.title} disabled={saving} required onChange={event => setDraft({ ...draft, title: event.target.value })} /></label>
+      <label>描述<textarea aria-label={`${issue.title} 描述`} value={draft.description} disabled={saving} onChange={event => setDraft({ ...draft, description: event.target.value })} /></label>
+      <label>优先级<select aria-label={`${issue.title} 优先级`} value={draft.priority} disabled={saving} onChange={event => setDraft({ ...draft, priority: event.target.value as Issue['priority'] })}><option value="low">低</option><option value="medium">中</option><option value="high">高</option></select></label>
+      <button disabled={saving}>保存内容</button><button type="button" disabled={saving} onClick={() => setDraft(null)}>取消编辑</button>
+      <p>远端更新保留当前草稿；保存内容不会覆盖处理状态、点位或快照。</p>
+    </form> : <button onClick={() => { setDraft({ title: issue.title, description: issue.description, priority: issue.priority }); setError(''); setMessage('') }}>编辑内容</button>}
     <dl><dt>标记位置（米）</dt><dd>x: {issue.position.x}, y: {issue.position.y}, z: {issue.position.z}</dd><dt>创建时间</dt><dd>{new Date(issue.createdAt).toLocaleString()}</dd><dt>更新时间</dt><dd>{new Date(issue.updatedAt).toLocaleString()}</dd></dl>
     <label>处理状态 <select aria-label={`${issue.title} 处理状态`} value={issue.status} disabled={saving} onChange={event => { void changeStatus(event.target.value as Issue['status']) }}>
       <option value="open">待处理</option><option value="in_progress">处理中</option><option value="resolved">已解决</option>
     </select></label>
-    {saving && <p role="status">正在保存状态…</p>}
+    {saving && <p role="status">正在保存…</p>}
     {message && <p role="status">{message}</p>}
     {error && <p role="alert">{error}</p>}
   </article>

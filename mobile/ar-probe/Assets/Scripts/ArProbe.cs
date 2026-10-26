@@ -26,6 +26,14 @@ public sealed class ArProbe : MonoBehaviour
     private Coroutine starting;
     public bool CameraActive { get; private set; }
     private bool useDepth;
+    private bool snapshotMode;
+    public void SetSnapshotMode(bool enabled) {
+        snapshotMode = enabled;
+        if (enabled && planes != null) foreach (var plane in planes.trackables) {
+            var visualizer = plane.GetComponent<ARPlaneMeshVisualizer>(); if (visualizer != null) visualizer.enabled = false;
+            var renderer = plane.GetComponent<Renderer>(); if (renderer != null) renderer.enabled = false;
+        }
+    }
     public const string DepthPreference = "arwork.depth-assisted";
     public bool DepthAssistanceEnabled => PlayerPrefs.GetInt(DepthPreference, 0) == 1;
     private ARAnchor markerAnchor;
@@ -211,8 +219,9 @@ public sealed class ArProbe : MonoBehaviour
         {
             // The visualizer owns renderer visibility. Disable it when the whole session loses tracking.
             var visualizer = plane.GetComponent<ARPlaneMeshVisualizer>();
-            if (visualizer != null) visualizer.enabled = ARSession.state == ARSessionState.SessionTracking && plane.subsumedBy == null;
+            if (visualizer != null) visualizer.enabled = !snapshotMode && ARSession.state == ARSessionState.SessionTracking && plane.subsumedBy == null;
         }
+        if (snapshotMode) foreach (var plane in planes.trackables) { var renderer = plane.GetComponent<Renderer>(); if (renderer != null) renderer.enabled = false; }
         status.text = ARSession.state == ARSessionState.SessionTracking ? "园区巡检 · 定位正常" : "园区巡检 · 正在识别环境";
         if (inspectionMode && useDepth)
             status.text += occlusion.currentEnvironmentDepthMode == EnvironmentDepthMode.Disabled

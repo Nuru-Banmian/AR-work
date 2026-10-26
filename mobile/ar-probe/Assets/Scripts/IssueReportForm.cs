@@ -8,17 +8,18 @@ using UnityEngine.UI;
 public sealed class IssueReportForm : MonoBehaviour
 {
     [Serializable] private sealed class Position { public float x, y, z; }
-    [Serializable] private sealed class CreateIssue { public string title, description, priority; public Position position; }
-    [Serializable] private sealed class SavedIssue { public string id, title, priority, status; }
+    [Serializable] private sealed class CreateIssue { public string title, description, priority, snapshot; public Position position; }
+    [Serializable] private sealed class SavedIssue { public string id, title, priority, status, snapshotUrl; }
     [Serializable] private sealed class Success { public SavedIssue data; }
     [Serializable] private sealed class HealthData { public string status; }
     [Serializable] private sealed class Health { public HealthData data; }
-    [Serializable] private sealed class PendingRequest { public string key, body, server; }
+    [Serializable] private sealed class PendingRequest { public string key, body, server, endpoint; }
     private const string PendingPreference = "arwork.pending-report";
 
     private GameObject reportPanel, homeControls, settingsPanel, captureControls, previewPanel;
     private Canvas canvas;
     private RawImage preview;
+    private Text snapshotMessage;
     private Texture2D snapshot;
     private Action snapshotConfirmed;
     private Button capture;
@@ -36,7 +37,9 @@ public sealed class IssueReportForm : MonoBehaviour
     private Button edit, submit, priority, test, historyButton;
     private bool hasPosition, busy, saved;
     private int priorityIndex = 1;
-    private string requestKey, requestBody, requestAddress;
+    private string requestKey, requestBody, requestAddress, requestEndpoint;
+    private string confirmedSnapshot, reportSnapshot;
+    public string ConfirmedSnapshot => confirmedSnapshot;
     private Vector3 lockedPosition;
     private readonly string[] priorities = { "low", "medium", "high" };
 
@@ -87,11 +90,19 @@ public sealed class IssueReportForm : MonoBehaviour
         capture = ButtonAt(captureControls.transform, "快照 / 下一步", 25, 0.5f, 0.97f, () => {
             if (!hasPosition || !probe.HasTrackedDraft) return;
             lockedPosition = probe.CurrentPosition;
-            TakeSnapshot(() => { PositionLocked = true; probe.LeaveCamera(); captureControls.SetActive(false); reportPanel.SetActive(true); RefreshControls(); });
+            TakeSnapshot(() => { reportSnapshot = confirmedSnapshot; PositionLocked = true; probe.LeaveCamera(); captureControls.SetActive(false); reportPanel.SetActive(true); RefreshControls(); });
         });
         previewPanel = NavigationPanel(parent, "快照确认", 1600);
+        snapshotMessage = Label(previewPanel.transform, 26);
+        snapshotMessage.rectTransform.anchorMin = new Vector2(0.03f, 0.10f); snapshotMessage.rectTransform.anchorMax = new Vector2(0.97f, 0.17f);
+        snapshotMessage.rectTransform.offsetMin = snapshotMessage.rectTransform.offsetMax = Vector2.zero;
+        snapshotMessage.text = "确认现场照片后填写问题，或重拍。";
+        var previewFrame = new GameObject("照片预览区域", typeof(RectTransform)).GetComponent<RectTransform>();
+        previewFrame.SetParent(previewPanel.transform, false);
+        previewFrame.anchorMin = new Vector2(0.03f, 0.17f); previewFrame.anchorMax = new Vector2(0.97f, 0.98f);
+        previewFrame.offsetMin = previewFrame.offsetMax = Vector2.zero;
         preview = new GameObject("现场快照", typeof(RectTransform), typeof(RawImage)).GetComponent<RawImage>();
-        preview.transform.SetParent(previewPanel.transform, false);
+        preview.transform.SetParent(previewFrame, false);
         preview.rectTransform.anchorMin = new Vector2(0.03f, 0.17f); preview.rectTransform.anchorMax = new Vector2(0.97f, 0.98f);
         preview.rectTransform.offsetMin = preview.rectTransform.offsetMax = Vector2.zero;
         preview.gameObject.AddComponent<AspectRatioFitter>().aspectMode = AspectRatioFitter.AspectMode.FitInParent;
@@ -100,6 +111,11 @@ public sealed class IssueReportForm : MonoBehaviour
             if (history.IsRemarking) history.ShowRemarkControls(); else captureControls.SetActive(true);
         });
         ButtonAt(previewPanel.transform, "确认 / 下一步", 30, 0.52f, 0.97f, () => {
+            try {
+                var bytes = snapshot.EncodeToJPG(80);
+                if (bytes == null || bytes.Length > 6 * 1024 * 1024) throw new InvalidOperationException("照片超过 6 MiB，请重拍。");
+                confirmedSnapshot = Convert.ToBase64String(bytes);
+            } catch (Exception exception) { snapshotMessage.text = "图片处理失败，请重拍。"; Debug.LogException(exception); return; }
             previewPanel.SetActive(false); capturing = false; var confirm = snapshotConfirmed; snapshotConfirmed = null; confirm?.Invoke();
         });
         title = Field(rect, "问题标题（必填）", 500, 65, false);
@@ -127,7 +143,9 @@ public sealed class IssueReportForm : MonoBehaviour
 
     private void RestorePending()
     {
-        string stored = PlayerPrefs.GetString(PendingPreference, "");
+        string stored;
+        try { stored = PendingReportStore.Read() ?? PlayerPrefs.GetString(PendingPreference, ""); }
+        catch (Exception exception) { busy = true; message.text = "待确认上报读取失败，请保留应用数据。"; Debug.LogException(exception); return; }
         if (stored == "") return;
         try
         {
@@ -135,7 +153,7 @@ public sealed class IssueReportForm : MonoBehaviour
             var draft = JsonUtility.FromJson<CreateIssue>(pending.body);
             if (string.IsNullOrEmpty(pending.key) || string.IsNullOrEmpty(pending.server) || draft.position == null)
                 throw new ArgumentException("Invalid pending report");
-            requestKey = pending.key; requestBody = pending.body; requestAddress = pending.server;
+            requestKey = pending.key; requestBody = pending.body; requestAddress = pending.server; requestEndpoint = pending.endpoint ?? "/api/issues";
             draftServer = pending.server; title.text = draft.title; description.text = draft.description;
             priorityIndex = Array.IndexOf(priorities, draft.priority);
             if (priorityIndex < 0) throw new ArgumentException("Invalid pending priority");
@@ -163,6 +181,7 @@ public sealed class IssueReportForm : MonoBehaviour
         if (busy || (!saved && requestKey != null) || (!saved && draftServer != activeServer)) return;
         if (saved)
         {
+            ClearSnapshot();
             draftServer = activeServer;
             saved = false; hasPosition = false; PositionLocked = false;
             requestKey = requestBody = requestAddress = null;
@@ -218,18 +237,24 @@ public sealed class IssueReportForm : MonoBehaviour
         if (string.IsNullOrWhiteSpace(title.text)) { message.text = "请填写问题标题。"; yield break; }
         if (requestKey == null)
         {
+            if (string.IsNullOrEmpty(reportSnapshot)) { message.text = "请返回现场拍摄并确认快照。"; yield break; }
             var point = lockedPosition;
             var payload = new CreateIssue { title = title.text.Trim(), description = description.text,
-                priority = priorities[priorityIndex], position = new Position { x = point.x, y = point.y, z = point.z } };
+                snapshot = reportSnapshot, priority = priorities[priorityIndex], position = new Position { x = point.x, y = point.y, z = point.z } };
+            requestEndpoint = "/api/reports";
             requestKey = Guid.NewGuid().ToString("N");
             requestBody = JsonUtility.ToJson(payload);
             requestAddress = draftServer ?? activeServer;
-            PlayerPrefs.SetString(PendingPreference, JsonUtility.ToJson(new PendingRequest {
-                key = requestKey, body = requestBody, server = requestAddress }));
-            PlayerPrefs.Save();
+            try {
+                PendingReportStore.Save(JsonUtility.ToJson(new PendingRequest {
+                    key = requestKey, body = requestBody, server = requestAddress, endpoint = requestEndpoint }));
+            } catch (Exception exception) {
+                requestKey = requestBody = requestAddress = requestEndpoint = null;
+                message.text = "待提交请求保存失败，图片和内容仍保留，请重试。"; Debug.LogException(exception); yield break;
+            }
         }
         busy = true; RefreshControls(); message.text = "正在提交…";
-        using (var request = new UnityWebRequest(requestAddress + "/api/issues", "POST"))
+        using (var request = new UnityWebRequest(requestAddress + requestEndpoint, "POST"))
         {
             request.uploadHandler = new UploadHandlerRaw(Encoding.UTF8.GetBytes(requestBody));
             request.downloadHandler = new DownloadHandlerBuffer();
@@ -240,11 +265,12 @@ public sealed class IssueReportForm : MonoBehaviour
             {
                 SavedIssue issue = null;
                 try { issue = JsonUtility.FromJson<Success>(request.downloadHandler.text)?.data; } catch (ArgumentException) { }
-                if (issue != null && !string.IsNullOrEmpty(issue.id))
+                if (issue != null && !string.IsNullOrEmpty(issue.id) && (requestEndpoint != "/api/reports" || !string.IsNullOrEmpty(issue.snapshotUrl)))
                 {
                     saved = true; probe.KeepSubmittedMarker(requestAddress, issue.id);
                     live.Refresh();
-                    PlayerPrefs.DeleteKey(PendingPreference); PlayerPrefs.Save();
+                    try { PendingReportStore.Delete(); PlayerPrefs.DeleteKey(PendingPreference); PlayerPrefs.Save(); }
+                    catch (Exception exception) { Debug.LogException(exception); }
                     message.text = "上报成功：" + issue.title + "\n" + InspectionUi.Priority(issue.priority) + "优先级 · " + InspectionUi.Status(issue.status);
                     Debug.Log("ARWORK_SAVED_ID=" + issue.id);
                 }
@@ -280,7 +306,7 @@ public sealed class IssueReportForm : MonoBehaviour
     public void ShowHome()
     {
         probe.LeaveCamera();
-        ClearSnapshot();
+        // Keep the confirmed photo with the in-memory draft when returning home.
         reportPanel.SetActive(false); captureControls.SetActive(false); previewPanel.SetActive(false);
         settingsPanel.SetActive(false); homeControls.SetActive(true);
         history.Open(activeServer);
@@ -320,6 +346,7 @@ public sealed class IssueReportForm : MonoBehaviour
     private IEnumerator Capture()
     {
         capturing = true; captureControls.SetActive(false); history.HideRemarkControls();
+        probe.SetSnapshotMode(true);
         canvas.enabled = false;
         yield return new WaitForEndOfFrame();
         try
@@ -336,14 +363,14 @@ public sealed class IssueReportForm : MonoBehaviour
             if (history.IsRemarking) history.ShowRemarkControls(); else captureControls.SetActive(true);
             Debug.LogException(exception);
         }
-        finally { canvas.enabled = true; }
+        finally { probe.SetSnapshotMode(false); canvas.enabled = true; }
     }
 
     private void ClearSnapshot()
     {
         preview.texture = null;
         if (snapshot != null) Destroy(snapshot);
-        snapshot = null;
+        snapshot = null; confirmedSnapshot = null;
     }
 
     private static GameObject NavigationPanel(Transform parent, string name, float height)

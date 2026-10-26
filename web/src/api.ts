@@ -1,4 +1,5 @@
 export type Issue = {
+  snapshotUrl?: string
   id: string
   title: string
   description: string
@@ -44,4 +45,15 @@ export function errorMessage(reason: unknown): string {
   if (reason instanceof TypeError) return '网络连接失败，请检查服务地址和网络'
   if (reason instanceof Error && ['AbortError', 'TimeoutError'].includes(reason.name)) return '请求超时，请稍后重试'
   return reason instanceof Error ? reason.message : '请求失败，请稍后重试'
+}
+
+export async function updateContent(address: string, id: string, content: Pick<Issue, 'title' | 'description' | 'priority'>): Promise<Issue> {
+  const response = await fetch(`${serverAddress(address)}/api/issues/${encodeURIComponent(id)}/content`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(content), signal: AbortSignal.timeout(10000),
+  })
+  const result = await response.json()
+  if (!response.ok) throw new Error(`内容保存失败（${response.status}），请重试`)
+  if (!result.data || result.data.id !== id) throw new Error('保存结果无效，请刷新确认')
+  return result.data
 }
