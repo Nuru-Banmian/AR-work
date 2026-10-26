@@ -20,18 +20,17 @@ public sealed class ArProbe : MonoBehaviour
     private ARRaycastManager raycasts;
     private ARAnchorManager anchors;
     private AROcclusionManager occlusion;
-    private bool useDepth = true;
+    private bool useDepth;
     private Button depthToggle;
-    private string lastHitSource = "none";
     private ARAnchor markerAnchor;
     private GameObject marker;
     private Text status;
     private Text notice;
     private readonly List<ARRaycastHit> hits = new List<ARRaycastHit>();
     private readonly List<RaycastResult> uiHits = new List<RaycastResult>();
-    private int placements;
     private Vector3 lastPosition;
     private readonly Dictionary<string, ARAnchor> savedMarkers = new Dictionary<string, ARAnchor>();
+    private readonly Dictionary<string, string> markerStatuses = new Dictionary<string, string>();
     private GameObject suspendedMarker;
     private ARAnchor suspendedAnchor;
     private Vector3 suspendedPosition;
@@ -39,11 +38,12 @@ public sealed class ArProbe : MonoBehaviour
     private void Awake()
     {
         Screen.sleepTimeout = SleepTimeout.NeverSleep;
-        Application.targetFrameRate = 60;
+        Application.targetFrameRate = inspectionMode ? 30 : 60;
         CreateUi();
         var sessionObject = new GameObject("AR Session");
         sessionObject.SetActive(false);
         session = sessionObject.AddComponent<ARSession>();
+        if (inspectionMode) session.matchFrameRateRequested = false;
         session.attemptUpdate = false;
         session.enabled = false;
         sessionObject.AddComponent<ARInputManager>();
@@ -67,10 +67,11 @@ public sealed class ArProbe : MonoBehaviour
         if (inspectionMode)
         {
             occlusion = cameraObject.AddComponent<AROcclusionManager>();
-            occlusion.requestedEnvironmentDepthMode = EnvironmentDepthMode.Best;
+            occlusion.requestedEnvironmentDepthMode = EnvironmentDepthMode.Disabled;
             occlusion.environmentDepthTemporalSmoothingRequested = true;
             // Depth is used for hit testing; keep the marker visible for inspection.
             occlusion.requestedOcclusionPreferenceMode = OcclusionPreferenceMode.NoOcclusion;
+            occlusion.enabled = false;
         }
         var pose = cameraObject.AddComponent<TrackedPoseDriver>();
         pose.SetPoseSource(TrackedPoseDriver.DeviceType.GenericXRDevice, TrackedPoseDriver.TrackedPose.Center);
@@ -95,7 +96,7 @@ public sealed class ArProbe : MonoBehaviour
 
     private IEnumerator StartAr()
     {
-        notice.text = "Checking camera permission and AR service...";
+        notice.text = "正在准备相机和定位服务…";
 #if UNITY_ANDROID && !UNITY_EDITOR
         if (!UnityEngine.Android.Permission.HasUserAuthorizedPermission(UnityEngine.Android.Permission.Camera))
         {
@@ -106,7 +107,7 @@ public sealed class ArProbe : MonoBehaviour
                 yield return null;
             if (!UnityEngine.Android.Permission.HasUserAuthorizedPermission(UnityEngine.Android.Permission.Camera))
             {
-                notice.text = "Camera permission is missing. Allow it in app settings, then exit and reopen this app.";
+                notice.text = "请在系统设置中允许使用相机，然后重新打开应用。";
                 yield break;
             }
         }
@@ -114,18 +115,18 @@ public sealed class ArProbe : MonoBehaviour
         yield return ARSession.CheckAvailability();
         if (ARSession.state == ARSessionState.NeedsInstall)
         {
-            notice.text = "AR service needs installation/update. Follow the system prompt.";
+            notice.text = "定位服务需要安装或更新，请按系统提示操作。";
             yield return ARSession.Install();
         }
         if (ARSession.state == ARSessionState.Ready || ARSession.state == ARSessionState.SessionInitializing
             || ARSession.state == ARSessionState.SessionTracking)
         {
             session.enabled = true;
-            notice.text = "Move slowly over a well-lit textured surface. Tap a detected floor or wall to place a cube.";
+            notice.text = "缓慢移动手机扫描地面或墙面，点击表面放置标记。";
         }
         else
         {
-            notice.text = "AR is not ready: " + ARSession.state + ". Check AR service and network, then exit and reopen this app.";
+            notice.text = "定位服务未就绪，请检查网络和系统定位服务后重启应用。";
         }
     }
 
@@ -150,23 +151,13 @@ public sealed class ArProbe : MonoBehaviour
 
     private void Update()
     {
-        int trackedPlanes = 0;
-        int verticalPlanes = 0;
         foreach (var plane in planes.trackables)
         {
             // The visualizer owns renderer visibility. Disable it when the whole session loses tracking.
             var visualizer = plane.GetComponent<ARPlaneMeshVisualizer>();
             if (visualizer != null) visualizer.enabled = ARSession.state == ARSessionState.SessionTracking && plane.subsumedBy == null;
-            if (plane.trackingState == TrackingState.Tracking && plane.alignment == PlaneAlignment.HorizontalUp)
-                trackedPlanes++;
-            if (plane.trackingState == TrackingState.Tracking && plane.alignment == PlaneAlignment.Vertical)
-                verticalPlanes++;
         }
-        status.text = (inspectionMode ? "AR INSPECTION" : "AR DEVICE PROBE") + "\nSession: " + ARSession.state +
-                      "\nTracking reason: " + ARSession.notTrackingReason +
-                      "\nHorizontal: " + trackedPlanes + "  Vertical: " + verticalPlanes + "  Placements: " + placements +
-                      (inspectionMode ? "\nDepth: " + DepthState() + "  Hit: " + lastHitSource : "") +
-                      (marker ? "\nPosition (m): " + lastPosition.ToString("F2") : "\nMarker: none");
+        status.text = ARSession.state == ARSessionState.SessionTracking ? "园区巡检 · 定位正常" : "园区巡检 · 正在识别环境";
         if (depthToggle != null) depthToggle.interactable = reportForm == null || !reportForm.PositionLocked;
         if (ARSession.state != ARSessionState.SessionTracking || Input.touchCount == 0) return;
         if (reportForm != null && reportForm.PositionLocked) return;
@@ -199,7 +190,7 @@ public sealed class ArProbe : MonoBehaviour
 
         if (!raycasts.Raycast(touch.position, hits, TrackableType.PlaneWithinPolygon))
         {
-            notice.text = "No reliable hit. Move sideways near textured edges; try 0.5-5 m from the wall. Existing marker kept.";
+            notice.text = "暂未找到可用位置，请缓慢移动并对准有纹理的表面。";
             return;
         }
         foreach (var hit in hits)
@@ -211,32 +202,24 @@ public sealed class ArProbe : MonoBehaviour
             var newAnchor = anchors.AttachAnchor(plane, hit.pose);
             if (newAnchor == null)
             {
-                notice.text = "Could not attach an AR anchor. Scan the surface and try again.";
+                notice.text = "未能固定标记，请重新扫描后选点。";
                 return;
             }
             PlaceMarker(newAnchor, hit, plane.alignment == PlaneAlignment.Vertical ? "Wall plane" : "Floor plane");
             return;
         }
-        notice.text = inspectionMode ? "Tap a tracked floor or wall." : "Tap a tracked upward-facing horizontal surface.";
-    }
-
-    private string DepthState()
-    {
-        if (!useDepth) return "OFF";
-        if (occlusion == null || occlusion.descriptor == null) return "starting";
-        if (occlusion.descriptor.environmentDepthImageSupported == Supported.Unsupported) return "unsupported (planes)";
-        if (occlusion.currentEnvironmentDepthMode == EnvironmentDepthMode.Disabled) return "waiting (planes)";
-        return occlusion.environmentDepthTexture != null ? "ready" : "enabled/no frame";
+        notice.text = "请点击已识别的地面或墙面。";
     }
 
     private void ToggleDepth()
     {
         if (reportForm != null && reportForm.PositionLocked) return;
         useDepth = !useDepth;
-        occlusion.requestedEnvironmentDepthMode = useDepth ? EnvironmentDepthMode.Best : EnvironmentDepthMode.Disabled;
-        depthToggle.GetComponentInChildren<Text>().text = useDepth ? "DEPTH AUTO" : "PLANE ONLY";
-        notice.text = useDepth ? "Depth first, planes as fallback. Move sideways to gather depth; plain walls may still fail."
-            : "Plane-only comparison. Scan textured floor/wall edges before tapping.";
+        occlusion.requestedEnvironmentDepthMode = useDepth ? EnvironmentDepthMode.Fastest : EnvironmentDepthMode.Disabled;
+        occlusion.enabled = useDepth;
+        depthToggle.GetComponentInChildren<Text>().text = useDepth ? "深度辅助：开" : "深度辅助：关";
+        notice.text = useDepth ? "已开启深度辅助。若设备发热或卡顿，可关闭以降低负载。"
+            : "已关闭深度辅助，请对准有纹理的地面或墙面。";
     }
 
     private void PlaceMarker(ARAnchor newAnchor, ARRaycastHit hit, string source)
@@ -247,6 +230,7 @@ public sealed class ArProbe : MonoBehaviour
             marker.name = "10 cm inspection marker";
             marker.transform.localScale = Vector3.one * 0.1f;
             marker.GetComponent<Renderer>().sharedMaterial = markerMaterial;
+            SetMarkerColor(marker.GetComponent<Renderer>(), Color.yellow);
             Destroy(marker.GetComponent<Collider>());
         }
         lastPosition = hit.pose.position;
@@ -255,21 +239,9 @@ public sealed class ArProbe : MonoBehaviour
         marker.transform.localRotation = Quaternion.identity;
         if (markerAnchor != null) Destroy(markerAnchor.gameObject);
         markerAnchor = newAnchor;
-        lastHitSource = source;
-        placements++;
         if (reportForm != null) reportForm.MarkPositionSelected();
-        notice.text = source + " hit at " + hit.distance.ToString("F2") + " m. Check alignment from another angle before reporting.";
+        notice.text = "位置已选中，可继续点击调整。";
         Debug.Log("ARWORK_PLACED source=" + source + " distance=" + hit.distance.ToString("F2") + " position=" + lastPosition.ToString("F3"));
-    }
-
-    private void ClearMarker()
-    {
-        if (reportForm != null && reportForm.PositionLocked) return;
-        if (marker != null) Destroy(marker);
-        if (markerAnchor != null) Destroy(markerAnchor.gameObject);
-        lastHitSource = "none";
-        if (reportForm != null) reportForm.ClearPosition();
-        notice.text = "Marker cleared. Tap a detected surface to place it again.";
     }
 
     public Vector3 CurrentPosition => markerAnchor != null ? markerAnchor.transform.position : lastPosition;
@@ -291,9 +263,30 @@ public sealed class ArProbe : MonoBehaviour
             }
             Destroy(old.gameObject);
         }
-        if (markerAnchor != null) savedMarkers[key] = markerAnchor;
+        if (markerAnchor != null)
+        {
+            savedMarkers[key] = markerAnchor;
+            UpdateMarkerStatus(server, id, markerStatuses.TryGetValue(key, out var value) ? value : "open");
+        }
         marker = null;
         markerAnchor = null;
+    }
+
+    private static void SetMarkerColor(Renderer renderer, Color color)
+    {
+        if (renderer == null) return;
+        var tint = new MaterialPropertyBlock(); tint.SetColor("_Color", color);
+        renderer.SetPropertyBlock(tint);
+    }
+
+    public void UpdateMarkerStatus(string server, string id, string value)
+    {
+        var key = server + "/" + id;
+        markerStatuses[key] = value;
+        if (!savedMarkers.TryGetValue(key, out var anchor) || anchor == null) return;
+        var color = value == "resolved" ? new Color(0.1f, 0.9f, 0.3f) :
+            value == "in_progress" ? new Color(0.15f, 0.5f, 1f) : new Color(1f, 0.4f, 0.05f);
+        SetMarkerColor(anchor.GetComponentInChildren<Renderer>(), color);
     }
 
     public void BeginRemark()
@@ -314,7 +307,7 @@ public sealed class ArProbe : MonoBehaviour
         marker = suspendedMarker; markerAnchor = suspendedAnchor; lastPosition = suspendedPosition;
         if (marker != null) marker.SetActive(true);
         suspendedMarker = null; suspendedAnchor = null;
-        notice.text = saved ? "Replacement saved. Previous session marker removed." : "Replacement draft discarded. Saved marker kept.";
+        notice.text = saved ? "新位置已保存。" : "已取消，原标记保留。";
     }
 
     private void CreateUi()
@@ -332,24 +325,20 @@ public sealed class ArProbe : MonoBehaviour
         safe.anchorMin = new Vector2(area.xMin / Screen.width, area.yMin / Screen.height);
         safe.anchorMax = new Vector2(area.xMax / Screen.width, area.yMax / Screen.height);
         safe.offsetMin = safe.offsetMax = Vector2.zero;
-        var top = Panel(safe, "Status panel", new Vector2(0, 1), new Vector2(1, 1), new Vector2(0.5f, 1), 390);
+        var top = Panel(safe, "Status panel", new Vector2(0, 1), new Vector2(1, 1), new Vector2(0.5f, 1), 200);
         status = Label(top, 30);
-        status.rectTransform.offsetMin = new Vector2(24, 150);
+        status.rectTransform.offsetMin = new Vector2(24, 130);
         status.rectTransform.offsetMax = new Vector2(-24, -20);
         notice = Label(top, 28);
         notice.color = new Color(0.7f, 1f, 0.7f);
         notice.rectTransform.offsetMin = new Vector2(24, 12);
-        notice.rectTransform.offsetMax = new Vector2(-24, -235);
-        var bottom = Panel(safe, "Buttons", Vector2.zero, new Vector2(1, 0), new Vector2(0.5f, 0), 130);
-        var clear = MakeButton(bottom, "CLEAR MARKER", 0.02f, inspectionMode ? 0.32f : 0.49f);
-        clear.onClick.AddListener(ClearMarker);
+        notice.rectTransform.offsetMax = new Vector2(-24, -70);
         if (inspectionMode)
         {
-            depthToggle = MakeButton(bottom, "DEPTH AUTO", 0.34f, 0.66f);
+            var bottom = Panel(safe, "操作", Vector2.zero, new Vector2(1, 0), new Vector2(0.5f, 0), 130);
+            depthToggle = MakeButton(bottom, "深度辅助：关", 0.03f, 0.97f);
             depthToggle.onClick.AddListener(ToggleDepth);
         }
-        var exit = MakeButton(bottom, "EXIT APP", inspectionMode ? 0.68f : 0.51f, 0.98f);
-        exit.onClick.AddListener(() => Application.Quit());
         if (inspectionMode)
         {
             reportForm = gameObject.AddComponent<IssueReportForm>();
@@ -375,7 +364,7 @@ public sealed class ArProbe : MonoBehaviour
     {
         var label = new GameObject("Label", typeof(RectTransform), typeof(Text)).GetComponent<Text>();
         label.transform.SetParent(parent, false);
-        label.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+        label.font = InspectionUi.Font;
         label.fontSize = size;
         label.color = Color.white;
         label.raycastTarget = false;

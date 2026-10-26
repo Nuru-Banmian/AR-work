@@ -26,7 +26,7 @@ public static class ProbeBuild
     {
         const BuildTargetGroup group = BuildTargetGroup.Android;
         PlayerSettings.companyName = "AR Work";
-        PlayerSettings.productName = inspection ? "AR Inspection" : "AR Device Probe";
+        PlayerSettings.productName = inspection ? "园区巡检" : "设备检测";
         PlayerSettings.SetApplicationIdentifier(group, inspection ? "com.arwork.inspection" : "com.arwork.deviceprobe");
         PlayerSettings.insecureHttpOption = InsecureHttpOption.AlwaysAllowed;
         PlayerSettings.bundleVersion = "0.1.0";

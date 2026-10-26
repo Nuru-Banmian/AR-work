@@ -36,11 +36,12 @@ type Issue struct {
 }
 
 type api struct {
-	mu       sync.Mutex
-	path     string
-	issues   []Issue
-	origins  map[string]bool
-	requests map[string]creation
+	mu          sync.Mutex
+	path        string
+	issues      []Issue
+	origins     map[string]bool
+	requests    map[string]creation
+	subscribers map[chan struct{}]bool
 }
 
 // The original result is retained even when the issue's status changes later.
@@ -55,7 +56,7 @@ type snapshot struct {
 }
 
 func newAPI(path, allowedOrigins string) (http.Handler, error) {
-	a := &api{path: path, issues: []Issue{}, origins: map[string]bool{}, requests: map[string]creation{}}
+	a := &api{path: path, issues: []Issue{}, origins: map[string]bool{}, requests: map[string]creation{}, subscribers: map[chan struct{}]bool{}}
 	for _, origin := range strings.Split(allowedOrigins, ",") {
 		a.origins[strings.TrimSpace(origin)] = true
 	}
@@ -111,6 +112,8 @@ func (a *api) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch r.URL.Path {
+	case "/api/events":
+		a.events(w, r)
 	case "/health":
 		if r.Method != "GET" {
 			fail(w, 405, "method_not_allowed", "Use GET")
@@ -252,6 +255,7 @@ func (a *api) issue(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			a.issues = next
+			a.notifySaved()
 		}
 		respond(w, 200, map[string]any{"data": issue})
 		return
@@ -347,6 +351,7 @@ func (a *api) create(w http.ResponseWriter, r *http.Request) {
 	}
 	a.issues = next
 	a.requests = nextRequests
+	a.notifySaved()
 	respond(w, 201, map[string]any{"data": issue})
 }
 
