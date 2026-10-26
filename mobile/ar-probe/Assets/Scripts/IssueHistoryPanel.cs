@@ -51,7 +51,8 @@ public sealed class IssueHistoryPanel : MonoBehaviour
     private bool online;
     private Issue displayedIssue;
     private readonly Dictionary<string, string> syncTimes = new Dictionary<string, string>();
-    private string SyncTime => server != null && syncTimes.TryGetValue(server, out var time) ? InspectionUi.Time(time) : "尚未同步";
+    private string SyncKey => server + "/" + (selectedId ?? "");
+    private string SyncTime => server != null && syncTimes.TryGetValue(SyncKey, out var time) ? InspectionUi.Time(time) : "尚未同步";
 
     public void MarkSyncUnavailable(string address)
     {
@@ -63,7 +64,7 @@ public sealed class IssueHistoryPanel : MonoBehaviour
 
     private void MarkSynced()
     {
-        online = true; syncTimes[server] = DateTimeOffset.UtcNow.ToString("O");
+        online = true; syncTimes[SyncKey] = DateTimeOffset.UtcNow.ToString("O");
     }
 
     private void RenderMetadata()

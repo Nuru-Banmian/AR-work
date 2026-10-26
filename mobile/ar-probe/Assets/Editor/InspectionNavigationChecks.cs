@@ -145,6 +145,11 @@ public sealed class InspectionNavigationRunner : MonoBehaviour
             "failed online refresh makes synced detail read only without discarding content");
         responseMode = 0; Field<Button>(history, "refresh").onClick.Invoke(); yield return new WaitForSecondsRealtime(1);
         Check(Field<InputField>(history, "title").interactable, "successful refresh restores online editing");
+        responseMode = 2; yield return new WaitForSecondsRealtime(4);
+        Check(!Field<InputField>(history, "title").interactable && Field<Text>(history, "metadata").text.Contains("旧状态"),
+            "lost realtime connection reconciles HTTP and locks offline detail without manual refresh");
+        responseMode = 0; yield return new WaitForSecondsRealtime(3);
+        Check(Field<InputField>(history, "title").interactable, "HTTP recovery restores editing even when SSE is unavailable");
         yield return new WaitForSecondsRealtime(1);
         var photoArea = GameObject.Find("现场照片");
         var photoImage = photoArea.GetComponentInChildren<RawImage>();
@@ -154,6 +159,10 @@ public sealed class InspectionNavigationRunner : MonoBehaviour
         Check(photoViewer != null && photoViewer.GetComponentInChildren<RawImage>().texture != null && !probe.CameraActive, "photo opens full size without starting camera");
         photoViewer.transform.Find("关闭大图").GetComponent<Button>().onClick.Invoke();
         Check(!photoViewer.activeSelf, "photo viewer closes back to record");
+        responseMode = 2; Field<Button>(history, "back").onClick.Invoke(); yield return new WaitForSecondsRealtime(1);
+        Check(rows.GetComponentInChildren<RawImage>()?.texture != null,
+            "returning to retained list keeps thumbnails when offline refresh fails");
+        responseMode = 0; rows.GetComponentInChildren<Button>().onClick.Invoke(); yield return new WaitForSecondsRealtime(1);
         Field<InputField>(history, "title").text = "unsaved draft A";
         history.Hide(); form.ShowHome(); yield return new WaitForSecondsRealtime(1);
         rows.GetComponentInChildren<Button>().onClick.Invoke(); yield return new WaitForSecondsRealtime(1);
@@ -222,7 +231,8 @@ public sealed class InspectionNavigationRunner : MonoBehaviour
         local.enabled = true;
         yield return new WaitForSecondsRealtime(3);
         Check(local.IsOpen && localQueue.Get(localEntry.key).state == "synced", "read-only local detail does not block automatic upload");
-        Check(Field<Text>(local, "info").text.Contains("最近同步：") && Field<Text>(local, "info").text.Contains("回执状态：处理中"),
+        Check(Field<Text>(local, "info").text.Contains("最近同步：") && !Field<Text>(local, "info").text.Contains("未知") &&
+            Field<Text>(local, "info").text.Contains("回执状态：处理中"),
             "acknowledged local detail displays receipt status and durable sync time");
         local.Hide(); history.Hide();
         const string frozen = "{\"title\":\"pending A\",\"description\":\"original\",\"priority\":\"medium\",\"position\":{\"x\":1,\"y\":2,\"z\":3}}";

@@ -122,6 +122,7 @@ public sealed class IssueLiveUpdates : MonoBehaviour
             if (connection.Done || connection.SilenceSeconds > 25)
             {
                 StopConnection(); reconnectAt = Time.realtimeSinceStartup + 2f;
+                Refresh(); // An SSE-only failure may still permit HTTP; reconcile before declaring offline.
                 SetState("连接中断，正在重连，可手动刷新");
             }
         }
