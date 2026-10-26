@@ -13,29 +13,20 @@ public sealed class IssueHistoryPanel : MonoBehaviour
     [Serializable] public sealed class Issue {
         public string id, title, description, priority, status, createdAt, updatedAt;
         public Position position;
-        public CardReference reference;
     }
     [Serializable] private sealed class IssueResult { public Issue data; }
     [Serializable] private sealed class IssueList { public Issue[] data; }
     [Serializable] private sealed class Content { public string title, description, priority; }
-    [Serializable] private sealed class Location { public Position position; public CardReference reference; }
+    [Serializable] private sealed class Location { public Position position; }
 
-    public bool IsOpen => viewing || IsRemarking || (panel != null && panel.activeSelf);
+    public bool IsOpen => IsRemarking || (panel != null && panel.activeSelf);
     public bool IsRemarking { get; private set; }
     public bool Busy => busy && !loading;
     private bool loading;
     private Coroutine loadRoutine;
     private UnityWebRequest loadRequest;
     public bool RemarkLocked => busy || snapshotReady;
-    private bool snapshotReady, viewing;
-    private CardReference selectedReference, remarkReference;
-    private Vector3 remarkPoint;
-    private string selectedStatus;
-    private GameObject viewPanel, referencePrompt;
-    private RawImage referencePhoto;
-    private Text referenceInstructions;
-    private Texture2D referencePhotoTexture;
-    private Button viewPosition;
+    private bool snapshotReady;
     private ArProbe probe;
     private GameObject remarkPanel;
     private Text remarkMessage;
@@ -92,46 +83,17 @@ public sealed class IssueHistoryPanel : MonoBehaviour
         });
         save = IssueReportForm.ButtonAt(detail, "保存内容", 80, 0.03f, 0.48f, () => StartCoroutine(Save()));
         remark = IssueReportForm.ButtonAt(detail, "重新标记", 80, 0.52f, 0.97f, BeginRemark);
-        viewPosition = IssueReportForm.ButtonAt(detail, "查看现场位置", 160, 0.03f, 0.97f, BeginView);
-        viewPanel = new GameObject("历史现场位置", typeof(RectTransform));
-        viewPanel.transform.SetParent(parent, false);
-        var viewRect = viewPanel.GetComponent<RectTransform>();
-        viewRect.anchorMin = Vector2.zero; viewRect.anchorMax = Vector2.one;
-        viewRect.offsetMin = viewRect.offsetMax = Vector2.zero;
-        IssueReportForm.ButtonAt(viewRect, "返回详情", 150, 0.03f, 0.97f, () => {
-            probe.LeaveCamera(); viewing = false; viewPanel.SetActive(false); panel.SetActive(true);
-            GetComponent<IssueReportForm>().ShowRemarkNavigation(false);
-        });
-        viewPanel.SetActive(false);
-        referencePrompt = new GameObject("所需现场参照", typeof(RectTransform), typeof(Image));
-        referencePrompt.transform.SetParent(parent, false);
-        referencePrompt.GetComponent<Image>().color = new Color(0.02f, 0.05f, 0.08f, 1);
-        var prompt = referencePrompt.GetComponent<RectTransform>();
-        prompt.anchorMin = Vector2.zero; prompt.anchorMax = Vector2.one; prompt.offsetMin = prompt.offsetMax = Vector2.zero;
-        referenceInstructions = IssueReportForm.Label(prompt, 28);
-        referenceInstructions.rectTransform.anchorMin = new Vector2(0.03f, 0.75f); referenceInstructions.rectTransform.anchorMax = new Vector2(0.97f, 0.98f);
-        var photoBox = new GameObject("参照照片区域", typeof(RectTransform)).GetComponent<RectTransform>();
-        photoBox.SetParent(prompt, false); photoBox.anchorMin = new Vector2(0.05f, 0.25f); photoBox.anchorMax = new Vector2(0.95f, 0.72f); photoBox.offsetMin = photoBox.offsetMax = Vector2.zero;
-        referencePhoto = new GameObject("参照照片", typeof(RectTransform), typeof(RawImage), typeof(AspectRatioFitter)).GetComponent<RawImage>();
-        referencePhoto.transform.SetParent(photoBox, false); referencePhoto.GetComponent<AspectRatioFitter>().aspectMode = AspectRatioFitter.AspectMode.FitInParent;
-        IssueReportForm.ButtonAt(prompt, "返回详情", 150, 0.03f, 0.48f, () => {
-            referencePrompt.SetActive(false); panel.SetActive(true); GetComponent<IssueReportForm>().ShowRemarkNavigation(false);
-        });
-        IssueReportForm.ButtonAt(prompt, "开始扫描并自动校准", 150, 0.52f, 0.97f, () => {
-            referencePrompt.SetActive(false); viewing = true; viewPanel.SetActive(true); probe.BeginView(selectedReference, selectedStatus, server, selectedId);
-        });
-        referencePrompt.SetActive(false);
-        priority = IssueReportForm.ButtonAt(detail, "优先级", 240, 0.03f, 0.97f, () => {
+        priority = IssueReportForm.ButtonAt(detail, "优先级", 160, 0.03f, 0.97f, () => {
             priorityIndex = (priorityIndex + 1) % priorities.Length;
             priorityLabel.text = "优先级：" + InspectionUi.Priority(priorities[priorityIndex]); KeepDraft();
         });
         priorityLabel = priority.GetComponentInChildren<Text>();
-        description = IssueReportForm.Field(detail, "补充描述（选填）", 320, 150, true);
-        title = IssueReportForm.Field(detail, "问题标题（必填）", 490, 75, false);
+        description = IssueReportForm.Field(detail, "补充描述（选填）", 240, 150, true);
+        title = IssueReportForm.Field(detail, "问题标题（必填）", 410, 75, false);
         // Existing API content has no character limit. Never truncate it when opening the editor.
         title.characterLimit = description.characterLimit = 0;
         metadata = IssueReportForm.Label(detail, 26);
-        metadata.rectTransform.offsetMin = new Vector2(25, 585);
+        metadata.rectTransform.offsetMin = new Vector2(25, 505);
         metadata.rectTransform.offsetMax = new Vector2(-25, -10);
         title.onValueChanged.AddListener(_ => KeepDraft());
         description.onValueChanged.AddListener(_ => KeepDraft());
@@ -206,7 +168,7 @@ public sealed class IssueHistoryPanel : MonoBehaviour
         busy = value;
         close.interactable = back.interactable = refresh.interactable = !value;
         save.interactable = priority.interactable = title.interactable = description.interactable = !value && detailLoaded;
-        remark.interactable = viewPosition.interactable = !value && detailLoaded;
+        remark.interactable = !value && detailLoaded;
         cancelRemark.interactable = !value;
         confirmRemark.interactable = !value && hasRemarkPosition;
         foreach (var button in rows.GetComponentsInChildren<Button>()) button.interactable = !value;
@@ -292,7 +254,7 @@ public sealed class IssueHistoryPanel : MonoBehaviour
             RequireIssue(issue); RenderDetail(issue); break;
         }
         // Do not change remark position, replacement draft or save/cancel controls.
-        if (!IsRemarking && !viewing) SetBusy(false);
+        if (!IsRemarking) SetBusy(false);
     }
 
     private void RequireIssue(Issue issue)
@@ -305,9 +267,7 @@ public sealed class IssueHistoryPanel : MonoBehaviour
 
     private void RenderDetail(Issue issue)
     {
-        selectedReference = issue.reference; selectedStatus = issue.status;
-        metadata.text = (issue.reference == null ? "需现场补定位：请重新标记。\n" :
-            issue.reference.IsSupported ? "所需参照：" + issue.reference.cardId + " v" + issue.reference.version + "\n" : "参照版本/尺寸不支持，需现场补定位。\n") + "状态：" + InspectionUi.Status(issue.status) + "\n创建：" + InspectionUi.Time(issue.createdAt) +
+        metadata.text = "状态：" + InspectionUi.Status(issue.status) + "\n创建：" + InspectionUi.Time(issue.createdAt) +
             "  更新：" + InspectionUi.Time(issue.updatedAt) + "\n编号：" + issue.id;
         loadedContent = new Content { title = issue.title, description = issue.description, priority = issue.priority };
         var content = drafts.TryGetValue(DraftKey, out var draft) ? draft : loadedContent;
@@ -346,51 +306,13 @@ public sealed class IssueHistoryPanel : MonoBehaviour
         SetBusy(false);
     }
 
-    private void BeginView()
-    {
-        if (busy || !detailLoaded || selectedId == null) return;
-        if (selectedReference == null || !selectedReference.IsSupported)
-        { message.text = "需现场补定位：点击重新标记，保留原 ID、状态和内容。"; return; }
-        StartCoroutine(PrepareReference(true));
-    }
-
     private void BeginRemark()
     {
         if (busy || !detailLoaded || selectedId == null) return;
-        StartCoroutine(PrepareReference(false));
-    }
-
-    private IEnumerator PrepareReference(bool restore)
-    {
-        KeepDraft(); SetBusy(true);
-        var catalog = GetComponent<IssueReportForm>().References;
-        catalog.SetServer(server); yield return catalog.Refresh();
-        var target = restore ? catalog.Find(selectedReference) : catalog.Selected;
-        SetBusy(false);
-        if (target == null)
-        {
-            message.text = restore ? "此参照未下载或旧版本已停用，不能恢复；请联网刷新，或现场补定位。" : "请返回设置，登记或选择现场参照后再重新标记。";
-            yield break;
-        }
-        probe.UseReference(target);
-        if (restore)
-        {
-            if (referencePhotoTexture != null) Destroy(referencePhotoTexture);
-            try { referencePhotoTexture = target.DecodeImage(); }
-            catch (Exception e) { message.text = "参照照片不可用，请重新下载。"; Debug.LogException(e); yield break; }
-            referencePhoto.texture = referencePhotoTexture; referencePhoto.GetComponent<AspectRatioFitter>().aspectRatio = (float)referencePhotoTexture.width / referencePhotoTexture.height;
-            referenceInstructions.text = "请找到：" + target.Caption + "\n实测尺寸：" + (target.widthMeters*100).ToString("F1") + " × " + (target.heightMeters*100).ToString("F1") +
-                " 厘米。\n对准下图，跟踪有效后自动校准。参照移动或更换后须重新采集。\n" + catalog.Message;
-            panel.SetActive(false); referencePrompt.SetActive(true);
-            GetComponent<IssueReportForm>().ShowRemarkNavigation(true);
-        }
-        else
-        {
-            probe.BeginRemark(); hasRemarkPosition = false; snapshotReady = false; IsRemarking = true;
-            GetComponent<IssueReportForm>().ShowRemarkNavigation(true);
-            panel.SetActive(false); remarkPanel.SetActive(true); probe.EnterCamera(); SetBusy(false);
-            remarkMessage.text = "请扫描：" + target.Caption + "，跟踪有效后重新选点。保存成功后才替换原位置。";
-        }
+        KeepDraft(); probe.BeginRemark(); probe.EnterCamera(); hasRemarkPosition = false; snapshotReady = false; IsRemarking = true;
+        GetComponent<IssueReportForm>().ShowRemarkNavigation(true);
+        panel.SetActive(false); remarkPanel.SetActive(true); SetBusy(false);
+        remarkMessage.text = "请点击地面或墙面重新选点。保存成功后才替换原标记。";
     }
 
     public void MarkPositionSelected()
@@ -419,8 +341,6 @@ public sealed class IssueHistoryPanel : MonoBehaviour
         if (busy || !IsRemarking || !hasRemarkPosition) yield break;
         if (!snapshotReady)
         {
-            if (!probe.TryCaptureReference(out remarkReference)) { remarkMessage.text = "请重新扫描现场参照后选点。"; yield break; }
-            remarkPoint = probe.CurrentPosition;
             GetComponent<IssueReportForm>().TakeSnapshot(() => {
                 snapshotReady = true; remarkPanel.SetActive(true);
                 confirmRemark.GetComponentInChildren<Text>().text = "保存位置";
@@ -430,8 +350,8 @@ public sealed class IssueHistoryPanel : MonoBehaviour
         }
         if (UnityEngine.XR.ARFoundation.ARSession.state != UnityEngine.XR.ARFoundation.ARSessionState.SessionTracking || !probe.HasTrackedDraft)
         { remarkMessage.text = "定位暂不可用，请重新扫描后保存。"; yield break; }
-        var point = remarkPoint;
-        var body = JsonUtility.ToJson(new Location { reference = remarkReference, position = new Position { x = point.x, y = point.y, z = point.z } });
+        var point = probe.CurrentPosition;
+        var body = JsonUtility.ToJson(new Location { position = new Position { x = point.x, y = point.y, z = point.z } });
         bool succeeded = false;
         SetBusy(true); remarkMessage.text = "正在保存位置…";
         using (var request = new UnityWebRequest(Endpoint + "/position", "PATCH"))

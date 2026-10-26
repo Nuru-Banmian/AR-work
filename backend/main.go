@@ -24,47 +24,15 @@ type Position struct {
 	Z float64 `json:"z"`
 }
 
-type RelativePoint struct {
-	X *float64 `json:"x"`
-	Y *float64 `json:"y"`
-	Z *float64 `json:"z"`
-}
-
-// Reference identifies an immutable registered target version and a metre-scale relative point.
-type Reference struct {
-	CardID           string         `json:"cardId"`
-	Version          int            `json:"version"`
-	WidthMeters      float64        `json:"widthMeters"`
-	HeightMeters     float64        `json:"heightMeters"`
-	RelativePosition *RelativePoint `json:"relativePosition"`
-}
-
-func validReference(ref *Reference) bool {
-	if ref == nil {
-		return true
-	} // Legacy clients and records remain readable.
-	// Unity serializes single-precision dimensions; allow only their rounding error.
-	if strings.TrimSpace(ref.CardID) == "" || ref.Version < 1 || ref.WidthMeters < 0.05 || ref.WidthMeters > 5 || ref.HeightMeters < 0.05 || ref.HeightMeters > 5 || ref.RelativePosition == nil {
-		return false
-	}
-	for _, v := range []*float64{ref.RelativePosition.X, ref.RelativePosition.Y, ref.RelativePosition.Z} {
-		if v == nil || math.IsNaN(*v) || math.IsInf(*v, 0) || math.Abs(*v) > 100 {
-			return false
-		}
-	}
-	return true
-}
-
 type Issue struct {
-	ID          string     `json:"id"`
-	Reference   *Reference `json:"reference,omitempty"`
-	Title       string     `json:"title"`
-	Description string     `json:"description"`
-	Priority    string     `json:"priority"`
-	Status      string     `json:"status"`
-	Position    Position   `json:"position"`
-	CreatedAt   time.Time  `json:"createdAt"`
-	UpdatedAt   time.Time  `json:"updatedAt"`
+	ID          string    `json:"id"`
+	Title       string    `json:"title"`
+	Description string    `json:"description"`
+	Priority    string    `json:"priority"`
+	Status      string    `json:"status"`
+	Position    Position  `json:"position"`
+	CreatedAt   time.Time `json:"createdAt"`
+	UpdatedAt   time.Time `json:"updatedAt"`
 }
 
 type api struct {
@@ -73,7 +41,6 @@ type api struct {
 	issues      []Issue
 	origins     map[string]bool
 	requests    map[string]creation
-	targets     []ReferenceTarget
 	subscribers map[chan struct{}]bool
 }
 
@@ -84,9 +51,8 @@ type creation struct {
 }
 
 type snapshot struct {
-	Issues     []Issue             `json:"issues"`
-	Requests   map[string]creation `json:"requests"`
-	References []ReferenceTarget   `json:"references,omitempty"`
+	Issues   []Issue             `json:"issues"`
+	Requests map[string]creation `json:"requests"`
 }
 
 func newAPI(path, allowedOrigins string) (http.Handler, error) {
@@ -103,7 +69,6 @@ func newAPI(path, allowedOrigins string) (http.Handler, error) {
 			var stored snapshot
 			err = json.Unmarshal(data, &stored)
 			a.issues = stored.Issues
-			a.targets = stored.References
 			if stored.Requests != nil {
 				a.requests = stored.Requests
 			}
@@ -147,8 +112,6 @@ func (a *api) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch r.URL.Path {
-	case "/api/references":
-		a.references(w, r)
 	case "/api/events":
 		a.events(w, r)
 	case "/health":
@@ -243,8 +206,7 @@ func (a *api) issue(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	var location struct {
-		Position  *struct{ X, Y, Z *float64 } `json:"position"`
-		Reference *Reference                  `json:"reference"`
+		Position *struct{ X, Y, Z *float64 } `json:"position"`
 	}
 	if position {
 		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64*1024))
@@ -268,26 +230,17 @@ func (a *api) issue(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	if position && !validReference(location.Reference) {
-		fail(w, 400, "invalid_argument", "Unknown card/version/size or invalid relative position")
-		return
-	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	for index, issue := range a.issues {
 		if issue.ID != parts[0] {
 			continue
 		}
-		if position && (!a.registeredReference(location.Reference) || (issue.Reference != nil && location.Reference == nil)) {
-			fail(w, 400, "invalid_reference", "Scan an active registered reference; location was not changed")
-			return
-		}
 		if status || content || position {
 			if status {
 				issue.Status = input.Status
 			} else if position {
 				issue.Position = Position{*location.Position.X, *location.Position.Y, *location.Position.Z}
-				issue.Reference = location.Reference
 			} else {
 				issue.Title = strings.TrimSpace(*edit.Title)
 				issue.Description = *edit.Description
@@ -296,7 +249,7 @@ func (a *api) issue(w http.ResponseWriter, r *http.Request) {
 			issue.UpdatedAt = time.Now().UTC()
 			next := append([]Issue{}, a.issues...)
 			next[index] = issue
-			if err := saveIssues(a.path, snapshot{Issues: next, Requests: a.requests, References: a.targets}); err != nil {
+			if err := saveIssues(a.path, snapshot{next, a.requests}); err != nil {
 				log.Printf("save issue: %v", err)
 				fail(w, 500, "storage_error", "Could not save issue; data was not changed")
 				return
@@ -316,7 +269,6 @@ func (a *api) create(w http.ResponseWriter, r *http.Request) {
 		Description string                      `json:"description"`
 		Priority    string                      `json:"priority"`
 		Position    *struct{ X, Y, Z *float64 } `json:"position"`
-		Reference   *Reference                  `json:"reference"`
 	}
 	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64*1024))
 	decoder.DisallowUnknownFields()
@@ -347,10 +299,6 @@ func (a *api) create(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if !validReference(input.Reference) {
-		fail(w, 400, "invalid_argument", "Unknown card/version/size or invalid relative position")
-		return
-	}
 	id := make([]byte, 16)
 	if _, err := rand.Read(id); err != nil {
 		fail(w, 500, "internal_error", "Could not create issue")
@@ -358,20 +306,11 @@ func (a *api) create(w http.ResponseWriter, r *http.Request) {
 	}
 	now := time.Now().UTC()
 	issue := Issue{ID: hex.EncodeToString(id), Title: input.Title, Description: input.Description, Priority: input.Priority,
-		Reference: input.Reference, Status: "open", Position: Position{*input.Position.X, *input.Position.Y, *input.Position.Z}, CreatedAt: now, UpdatedAt: now}
+		Status: "open", Position: Position{*input.Position.X, *input.Position.Y, *input.Position.Z}, CreatedAt: now, UpdatedAt: now}
 	// Signed zero is the same location and must not produce a different replay fingerprint.
 	for _, coordinate := range []*float64{&issue.Position.X, &issue.Position.Y, &issue.Position.Z} {
 		if *coordinate == 0 {
 			*coordinate = 0
-		}
-	}
-	if issue.Reference != nil {
-		issue.Reference.WidthMeters = math.Round(issue.Reference.WidthMeters*1e6) / 1e6
-		issue.Reference.HeightMeters = math.Round(issue.Reference.HeightMeters*1e6) / 1e6
-		for _, coordinate := range []*float64{issue.Reference.RelativePosition.X, issue.Reference.RelativePosition.Y, issue.Reference.RelativePosition.Z} {
-			if *coordinate == 0 {
-				*coordinate = 0
-			}
 		}
 	}
 	canonical, _ := json.Marshal(struct {
@@ -379,8 +318,7 @@ func (a *api) create(w http.ResponseWriter, r *http.Request) {
 		Description string
 		Priority    string
 		Position    Position
-		Reference   *Reference `json:",omitempty"`
-	}{issue.Title, issue.Description, issue.Priority, issue.Position, issue.Reference})
+	}{issue.Title, issue.Description, issue.Priority, issue.Position})
 	digest := sha256.Sum256(canonical)
 	fingerprint := hex.EncodeToString(digest[:])
 	key := r.Header.Get("Idempotency-Key")
@@ -398,10 +336,6 @@ func (a *api) create(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	if !a.registeredReference(issue.Reference) {
-		fail(w, 400, "invalid_reference", "Reference is missing, inactive or has different dimensions")
-		return
-	}
 	next := append(append([]Issue{}, a.issues...), issue)
 	nextRequests := make(map[string]creation, len(a.requests)+1)
 	for k, value := range a.requests {
@@ -410,7 +344,7 @@ func (a *api) create(w http.ResponseWriter, r *http.Request) {
 	if key != "" {
 		nextRequests[key] = creation{fingerprint, issue}
 	}
-	if err := saveIssues(a.path, snapshot{Issues: next, Requests: nextRequests, References: a.targets}); err != nil {
+	if err := saveIssues(a.path, snapshot{next, nextRequests}); err != nil {
 		log.Printf("save issues: %v", err)
 		fail(w, 500, "storage_error", "Could not save issue; data was not changed")
 		return

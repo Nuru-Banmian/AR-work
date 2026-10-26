@@ -97,7 +97,6 @@ public sealed class InspectionNavigationRunner : MonoBehaviour
                         lastPostBody = new StreamReader(request.InputStream).ReadToEnd();
                         lastPostKey = request.Headers["Idempotency-Key"]; lastPostPort = request.Url.Port;
                     }
-                    if (request.Url.AbsolutePath == "/api/references") body = "{\"data\":[]}";
                     if (request.Url.AbsolutePath == "/health") body = "{\"data\":{\"status\":\"ok\"}}";
                     if (responseMode == 1 && request.Url.AbsolutePath == "/api/issues") body = "{\"data\":[]}";
                     if (responseMode == 2) context.Response.StatusCode = 500;
@@ -113,23 +112,6 @@ public sealed class InspectionNavigationRunner : MonoBehaviour
         var probe = FindObjectOfType<ArProbe>(); var form = probe.GetComponent<IssueReportForm>(); var history = probe.GetComponent<IssueHistoryPanel>();
         Check(!probe.CameraActive && (XRGeneralSettings.Instance == null || !XRGeneralSettings.Instance.Manager.isInitializationComplete), "startup leaves XR uninitialized");
         Check(history.IsOpen && !Field<GameObject>(form, "reportPanel").activeSelf, "startup opens records, not form");
-        var setup = probe.GetComponent<ReferenceSetup>();
-        setup.Open("http://127.0.0.1:18081", () => { }); yield return new WaitForSecondsRealtime(1);
-        var photoButton = GameObject.Find("拍摄 / 重拍图案").GetComponent<Button>();
-        Check(photoButton.GetComponentInChildren<Text>().text.Contains("先填"), "photo button explains missing measured dimensions before tapping");
-        photoButton.onClick.Invoke(); yield return null;
-        var selectedInput = UnityEngine.EventSystems.EventSystem.current.currentSelectedGameObject?.GetComponent<InputField>();
-        Check(selectedInput != null && selectedInput.placeholder.GetComponent<Text>().text.Contains("宽度"), "photo tap focuses the missing width field");
-        Check(!probe.CameraActive, "invalid reference dimensions leave the camera stopped");
-        var widthInput = GameObject.Find("实测图案宽度（厘米）").GetComponent<InputField>();
-        var heightInput = GameObject.Find("实测图案高度（厘米）").GetComponent<InputField>();
-        widthInput.text = "20"; heightInput.text = "20"; yield return null;
-        Check(photoButton.GetComponentInChildren<Text>().text == "拍摄 / 重拍图案", "valid dimensions enable the normal photo action caption");
-        photoButton.onClick.Invoke(); yield return null;
-        Check(probe.CameraActive && probe.IsEnrolling, "valid reference dimensions enter enrollment camera flow");
-        var cancelPhoto = Array.Find(Resources.FindObjectsOfTypeAll<Button>(), b => b.gameObject.scene.IsValid() && b.gameObject.name == "取消拍摄");
-        cancelPhoto.onClick.Invoke();
-        GameObject.Find("返回设置").GetComponent<Button>().onClick.Invoke();
         var depthButton = Field<GameObject>(form, "settingsPanel").transform.Find("深度辅助：关").GetComponent<Button>();
         Check(!probe.DepthAssistanceEnabled, "depth defaults off");
         depthButton.onClick.Invoke();
@@ -167,9 +149,10 @@ public sealed class InspectionNavigationRunner : MonoBehaviour
         responseMode = 0; Field<Button>(history, "refresh").onClick.Invoke(); yield return new WaitForSecondsRealtime(1);
         Check(rows.childCount == 1, "refresh recovers records after failure");
         rows.GetComponentInChildren<Button>().onClick.Invoke(); yield return new WaitForSecondsRealtime(1);
-        Call(history, "BeginRemark"); yield return new WaitForSecondsRealtime(1);
-        Check(!probe.CameraActive && !history.IsRemarking, "remark without a registered reference does not open camera");
-        Check(history.IsOpen && Field<Text>(history, "message").text.Contains("参照"), "missing reference explains setup while preserving detail");
+        Call(history, "BeginRemark");
+        Check(probe.CameraActive && history.IsRemarking, "remark explicitly enters camera");
+        Field<Button>(history, "cancelRemark").onClick.Invoke();
+        Check(!probe.CameraActive && !history.IsRemarking && history.IsOpen, "cancel remark stops camera and returns detail");
         form.ShowHome(); history.Hide();
         Check(!history.IsOpen && !history.Busy, "navigation can cancel loading");
         const string frozen = "{\"title\":\"pending A\",\"description\":\"original\",\"priority\":\"medium\",\"position\":{\"x\":1,\"y\":2,\"z\":3}}";
