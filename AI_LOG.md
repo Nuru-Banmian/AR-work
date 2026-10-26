@@ -495,4 +495,17 @@
 - [Google ARCore 支持设备](https://developers.google.com/ar/devices)：区分 Google Play 与 China 区域。
 - [Enable AR in your Android app](https://developers.google.com/ar/develop/java/enable-arcore)：支持检测、服务安装更新与相机权限要求。
 
-截至本轮日志更新，尚未获得用户手机的 Android/HyperOS 版本和 AR 服务状态，未运行真机平面检测。
+截至 P-011，尚未获得用户手机的 Android/HyperOS 版本和 AR 服务状态，未运行真机平面检测。
+
+## P-012
+
+- 目标：用户补充手机 HyperOS 完整版本，继续检查 AR 运行条件
+
+### Prompt 原文
+
+> hyperos 3.0.312.0.WMBCNXM.C11
+
+### 结果
+
+- 采用
+- 将该版本作为用户报告的信息记录，未独立读取手机核实；不依据版本字符串推断确切 Android 版本或 ARCore 运行结果。继续索取设置中显示的 Android 版本和 AR 服务安装状态，真机平面检测仍待执行。
