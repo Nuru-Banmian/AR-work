@@ -8,6 +8,7 @@ using UnityEngine.UI;
 // Local records share the home list; the server list replaces them by acknowledged ID.
 public sealed class LocalReports : MonoBehaviour
 {
+    [Serializable] private sealed class Receipt { public IssueHistoryPanel.Issue data; }
     private ReportQueue queue;
     private ReportQueueSender sender;
     private HttpClient client;
@@ -91,15 +92,26 @@ public sealed class LocalReports : MonoBehaviour
             foreach (var entry in queue.List(server())) {
                 if (entry.state == "synced" && remote.Any(issue => issue.id == entry.serverId)) continue;
                 var payload = JsonUtility.FromJson<ReportPayload>(entry.body);
-                var button = IssueReportForm.ButtonAt(rows, payload.title + "\n" + State(entry) +
-                    (entry.frozen ? " · 已冻结" : " · 可编辑"), 0, 0, 1, () => Show(entry.key));
+                var button = IssueReportForm.ButtonAt(rows, payload.title + "\n" + State(entry) + " · " + ProcessingState(entry) +
+                    "\n最近同步：" + SyncTime(entry), 0, 0, 1, () => Show(entry.key));
                 button.gameObject.AddComponent<LayoutElement>().preferredHeight = 155;
+                button.gameObject.AddComponent<IssueListPhoto>().Initialize(button, null, payload.snapshot);
             }
         } catch (Exception error) { failure = "本地记录读取失败，请保留应用数据。"; Debug.LogException(error); }
     }
 
     public static string State(ReportQueue.Entry entry) => entry.state == "pending" ? "待上传" :
         entry.state == "synced" ? "已同步" : entry.state == "uploading" ? "上传中 / 中断后将重试" : "上传失败";
+
+    private static string SyncTime(ReportQueue.Entry entry) => entry.state != "synced" ? "尚未同步" :
+        string.IsNullOrEmpty(entry.syncedAt) ? "未知（旧回执）" : InspectionUi.Time(entry.syncedAt);
+
+    private static string ProcessingState(ReportQueue.Entry entry)
+    {
+        if (entry.state != "synced") return "待处理（本地）";
+        var issue = JsonUtility.FromJson<Receipt>(entry.receipt)?.data;
+        return "回执状态：" + (issue == null || string.IsNullOrEmpty(issue.status) ? "未知" : InspectionUi.Status(issue.status));
+    }
 
     private void Show(string key)
     {
@@ -109,7 +121,9 @@ public sealed class LocalReports : MonoBehaviour
             priorityIndex = Array.IndexOf(priorities, payload.priority); SetPriority();
             title.interactable = description.interactable = priority.interactable = save.interactable = !entry.frozen;
             retry.interactable = entry.state != "synced";
-            info.text = State(entry) + "\n" + (entry.frozen ? "请求已冻结，重试使用原内容。" : "尚未发送，可编辑内容。") +
+            info.text = State(entry) + " · " + ProcessingState(entry) + "\n最近同步：" + SyncTime(entry) + "\n" +
+                (entry.state == "synced" ? "本地回执只读，状态可能已过期；联网返回首页刷新后查看最新记录。" :
+                    entry.frozen ? "请求已冻结，重试使用原内容。" : "尚未发送，可编辑内容。") +
                 "\n" + entry.error + (entry.serverId == null ? "" : "\n服务器编号：" + entry.serverId);
             if (texture != null) Destroy(texture); texture = null; photo.enabled = false;
             if (!string.IsNullOrEmpty(payload.snapshot)) {

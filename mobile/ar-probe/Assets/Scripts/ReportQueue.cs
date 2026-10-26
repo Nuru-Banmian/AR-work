@@ -17,6 +17,7 @@ public sealed class ReportQueue
     {
         public int version = 1;
         public string key, server, endpoint, body, state = "pending", serverId, error, receipt;
+        public string syncedAt;
         public bool frozen;
     }
 
@@ -69,6 +70,7 @@ public sealed class ReportQueue
         if (string.IsNullOrEmpty(serverId) || string.IsNullOrEmpty(receipt)) throw new ArgumentException("Missing receipt");
         var entry = Get(key);
         entry.serverId = serverId; entry.receipt = receipt; entry.state = "synced"; entry.error = null;
+        entry.syncedAt = DateTimeOffset.UtcNow.ToString("O");
         Write(entry);
     }
 
