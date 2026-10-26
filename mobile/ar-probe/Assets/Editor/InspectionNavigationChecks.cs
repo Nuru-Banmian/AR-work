@@ -96,7 +96,7 @@ public sealed class InspectionNavigationRunner : MonoBehaviour
                     var context = await fixture.GetContextAsync();
                     var request = context.Request; string source = request.Url.Port == 18081 ? "A" : "B";
                     string issue = "{\"id\":\"same-id\",\"title\":\"Server " + source + "\",\"description\":\"fixture\",\"priority\":\"medium\",\"status\":\"in_progress\",\"position\":{\"x\":1,\"y\":2,\"z\":3}}";
-                    if (source == "A") issue = issue.Substring(0, issue.Length - 1) + ",\"snapshotUrl\":\"/api/issues/same-id/snapshot\"}";
+                    if (source == "A" || (request.HttpMethod == "POST" && request.Url.AbsolutePath == "/api/reports")) issue = issue.Substring(0, issue.Length - 1) + ",\"snapshotUrl\":\"/api/issues/same-id/snapshot\"}";
                     if (request.Url.AbsolutePath.EndsWith("/snapshot")) {
                         var photo = Convert.FromBase64String("iVBORw0KGgoAAAANSUhEUgAAACAAAAAwCAIAAAD/zu84AAAAL0lEQVR4nO3NQQkAAAgEsMtkHNMZ1RQ+hMH+S02fikAgEAgEAoFAIBAIBAKB4FOwoW0IakT/d2gAAAAASUVORK5CYII=");
                         context.Response.ContentType = "image/png";
@@ -180,21 +180,36 @@ public sealed class InspectionNavigationRunner : MonoBehaviour
         local.enabled = false;
         var localEntry = local.Add("http://127.0.0.1:18082", "/api/reports",
             "{\"title\":\"offline local\",\"description\":\"kept\",\"priority\":\"medium\",\"position\":{\"x\":0,\"y\":1,\"z\":2},\"snapshot\":\"iVBORw0KGgoAAAANSUhEUgAAACAAAAAwCAIAAAD/zu84AAAAL0lEQVR4nO3NQQkAAAgEsMtkHNMZ1RQ+hMH+S02fikAgEAgEAoFAIBAIBAKB4FOwoW0IakT/d2gAAAAASUVORK5CYII=\"}");
-        form.ShowHome(); yield return new WaitForSecondsRealtime(1);
+        form.ShowHome(); history.RefreshLocalRows();
+        Check(Array.TrueForAll(rows.GetComponentsInChildren<Button>(), button => !button.interactable), "queue refresh preserves in-flight list navigation lock");
+        yield return new WaitForSecondsRealtime(1);
         var localButton = Array.Find(rows.GetComponentsInChildren<Button>(), button => button.GetComponentInChildren<Text>().text.Contains("offline local"));
         Check(localButton != null, "home includes durable local record");
         localButton.onClick.Invoke();
         Check(local.IsOpen && Field<InputField>(local, "title").interactable && !probe.CameraActive, "unsent local detail opens editable without camera");
+        yield return null;
+        Canvas.ForceUpdateCanvases();
+        var footer = (RectTransform)Field<GameObject>(form, "homeControls").transform.Find("新增问题");
+        var pointer = new UnityEngine.EventSystems.PointerEventData(UnityEngine.EventSystems.EventSystem.current) {
+            position = RectTransformUtility.WorldToScreenPoint(null, footer.TransformPoint(footer.rect.center))
+        };
+        var hits = new System.Collections.Generic.List<UnityEngine.EventSystems.RaycastResult>();
+        UnityEngine.EventSystems.EventSystem.current.RaycastAll(pointer, hits);
+        Debug.Log("ISSUE15_RAYCAST=" + pointer.position + " hits=" + string.Join(",", hits.ConvertAll(hit => hit.gameObject.name)));
+        Check(hits.Count > 0 && hits[0].gameObject.transform.IsChildOf(Field<GameObject>(local, "panel").transform), "local detail blocks hidden homepage navigation");
         Check(Field<RawImage>(local, "photo").texture.width == 32, "local detail reads persisted snapshot");
         Field<InputField>(local, "title").text = "edited offline";
         Field<Button>(local, "save").onClick.Invoke();
         yield return new WaitForSecondsRealtime(1);
         var localQueue = new ReportQueue(Path.Combine(Application.persistentDataPath, "report-queue-v1"));
-        Check(JsonUtility.FromJson<LocalReports.Payload>(localQueue.Get(localEntry.key).body).title == "edited offline", "local edit persists through public queue");
+        Check(JsonUtility.FromJson<ReportPayload>(localQueue.Get(localEntry.key).body).title == "edited offline", "local edit persists through public queue");
         localQueue.BeginSend(localEntry.key); history.RefreshLocalRows(); yield return null;
         localButton = Array.Find(rows.GetComponentsInChildren<Button>(), button => button.GetComponentInChildren<Text>().text.Contains("edited offline"));
         localButton.onClick.Invoke();
         Check(!Field<InputField>(local, "title").interactable && !Field<Button>(local, "save").interactable, "started local report is read only");
+        local.enabled = true;
+        yield return new WaitForSecondsRealtime(3);
+        Check(local.IsOpen && localQueue.Get(localEntry.key).state == "synced", "read-only local detail does not block automatic upload");
         local.Hide(); history.Hide();
         const string frozen = "{\"title\":\"pending A\",\"description\":\"original\",\"priority\":\"medium\",\"position\":{\"x\":1,\"y\":2,\"z\":3}}";
         var pending = "{\"key\":\"frozen-key\",\"server\":\"http://127.0.0.1:18081\",\"body\":\"" + frozen.Replace("\"", "\\\"") + "\"}";
@@ -205,7 +220,7 @@ public sealed class InspectionNavigationRunner : MonoBehaviour
         Check(PlayerPrefs.GetString("arwork.server") == "http://127.0.0.1:18082", "migration does not switch active service");
         Check(!PlayerPrefs.HasKey("arwork.pending-report"), "durable migration clears legacy preference");
         form.ShowHome(); yield return new WaitForSecondsRealtime(1);
-        Check(lastPostPort == 0, "another service never uploads migrated request");
+        Check(lastPostPort == 18082, "another service never uploads migrated request");
 
     }
 }

@@ -8,10 +8,6 @@ using UnityEngine.UI;
 // Local records share the home list; the server list replaces them by acknowledged ID.
 public sealed class LocalReports : MonoBehaviour
 {
-    [Serializable] public sealed class Payload {
-        public string title, description, priority, snapshot;
-        public IssueHistoryPanel.Position position;
-    }
     private ReportQueue queue;
     private ReportQueueSender sender;
     private HttpClient client;
@@ -45,8 +41,14 @@ public sealed class LocalReports : MonoBehaviour
         panel.transform.SetParent(parent, false);
         var rect = panel.GetComponent<RectTransform>();
         rect.anchorMin = Vector2.zero; rect.anchorMax = Vector2.one;
-        rect.offsetMin = new Vector2(0, 120); rect.offsetMax = new Vector2(0, -120);
+        rect.offsetMin = rect.offsetMax = Vector2.zero;
         panel.GetComponent<Image>().color = new Color(0.02f, 0.05f, 0.08f, 1);
+        // The backdrop is modal, while controls avoid Android's bottom gesture area.
+        var content = new GameObject("本地详情操作区", typeof(RectTransform)).GetComponent<RectTransform>();
+        content.SetParent(rect, false);
+        content.anchorMin = Vector2.zero; content.anchorMax = Vector2.one;
+        content.offsetMin = new Vector2(0, 120); content.offsetMax = new Vector2(0, -120);
+        rect = content;
         IssueReportForm.ButtonAt(rect, "返回首页", 10, 0.03f, 0.97f, () => { Hide(); closed(); });
         retry = IssueReportForm.ButtonAt(rect, "重试上传", 90, 0.52f, 0.97f, () => { retryKey = selected; nextAttempt = 0; Hide(); closed(); });
         save = IssueReportForm.ButtonAt(rect, "保存修改", 90, 0.03f, 0.48f, SaveEdit);
@@ -56,10 +58,15 @@ public sealed class LocalReports : MonoBehaviour
         description = IssueReportForm.Field(rect, "描述", 270, 120, true);
         title = IssueReportForm.Field(rect, "标题", 410, 75, false);
         title.characterLimit = description.characterLimit = 0;
+        var frame = new GameObject("本地快照区域", typeof(RectTransform)).GetComponent<RectTransform>();
+        frame.SetParent(rect, false);
+        frame.anchorMin = new Vector2(0.05f, 0.46f); frame.anchorMax = new Vector2(0.95f, 0.73f);
+        frame.offsetMin = frame.offsetMax = Vector2.zero;
         photo = new GameObject("本地快照", typeof(RectTransform), typeof(RawImage)).GetComponent<RawImage>();
-        photo.transform.SetParent(rect, false);
-        photo.rectTransform.anchorMin = new Vector2(0.05f, 0.46f); photo.rectTransform.anchorMax = new Vector2(0.95f, 0.73f);
+        photo.transform.SetParent(frame, false);
+        photo.rectTransform.anchorMin = Vector2.zero; photo.rectTransform.anchorMax = Vector2.one;
         photo.rectTransform.offsetMin = photo.rectTransform.offsetMax = Vector2.zero;
+        photo.raycastTarget = false;
         photo.gameObject.AddComponent<AspectRatioFitter>().aspectMode = AspectRatioFitter.AspectMode.FitInParent;
         info = IssueReportForm.Label(rect, 26);
         info.rectTransform.anchorMin = new Vector2(0.03f, 0.75f); info.rectTransform.anchorMax = new Vector2(0.97f, 0.98f);
@@ -83,7 +90,7 @@ public sealed class LocalReports : MonoBehaviour
         try {
             foreach (var entry in queue.List(server())) {
                 if (entry.state == "synced" && remote.Any(issue => issue.id == entry.serverId)) continue;
-                var payload = JsonUtility.FromJson<Payload>(entry.body);
+                var payload = JsonUtility.FromJson<ReportPayload>(entry.body);
                 var button = IssueReportForm.ButtonAt(rows, payload.title + "\n" + State(entry) +
                     (entry.frozen ? " · 已冻结" : " · 可编辑"), 0, 0, 1, () => Show(entry.key));
                 button.gameObject.AddComponent<LayoutElement>().preferredHeight = 155;
@@ -97,7 +104,7 @@ public sealed class LocalReports : MonoBehaviour
     private void Show(string key)
     {
         try {
-            var entry = queue.Get(key); var payload = JsonUtility.FromJson<Payload>(entry.body);
+            var entry = queue.Get(key); var payload = JsonUtility.FromJson<ReportPayload>(entry.body);
             selected = key; title.text = payload.title; description.text = payload.description;
             priorityIndex = Array.IndexOf(priorities, payload.priority); SetPriority();
             title.interactable = description.interactable = priority.interactable = save.interactable = !entry.frozen;
@@ -121,7 +128,7 @@ public sealed class LocalReports : MonoBehaviour
     {
         try {
             if (string.IsNullOrWhiteSpace(title.text)) { info.text = "请填写标题，输入已保留。"; return; }
-            var entry = queue.Get(selected); var payload = JsonUtility.FromJson<Payload>(entry.body);
+            var entry = queue.Get(selected); var payload = JsonUtility.FromJson<ReportPayload>(entry.body);
             payload.title = title.text.Trim(); payload.description = description.text; payload.priority = priorities[priorityIndex];
             queue.Edit(selected, JsonUtility.ToJson(payload)); Hide(); nextAttempt = 0; closed(); changed();
         } catch (Exception error) { info.text = "保存失败，输入已保留。" + error.Message; }
@@ -135,19 +142,20 @@ public sealed class LocalReports : MonoBehaviour
 
     private async void Update()
     {
-        if (failure != null || sender == null || sending || paused || IsOpen || Time.realtimeSinceStartup < nextAttempt) return;
+        if (failure != null || sender == null || sending || paused || (IsOpen && save.interactable) || Time.realtimeSinceStartup < nextAttempt) return;
         sending = true;
         try {
             var uploadServer = server();
             var task = sender.UploadNext(uploadServer, client, retryKey);
             retryKey = null;
-            changed(); // BeginSend has already persisted its uploading state.
+            if (!task.IsCompleted) changed(); // Notify only when a request actually started.
             bool attempted = await task;
             if (this == null) return;
             foreach (var entry in queue.List(uploadServer).Where(item => item.state == "synced"))
                 GetComponent<ArProbe>()?.AcknowledgeQueuedMarker(uploadServer, entry.key, entry.serverId);
             nextAttempt = Time.realtimeSinceStartup + (attempted ? 2 : 5);
-            changed();
+            if (IsOpen && !save.interactable) Show(selected);
+            if (attempted) changed();
             if (attempted) GetComponent<IssueLiveUpdates>()?.Refresh();
         } catch (Exception error) { failure = "队列保存或读取失败，请保留应用数据。"; Debug.LogException(error); changed(); }
         finally { sending = false; }
