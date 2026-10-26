@@ -11,13 +11,13 @@ public sealed class IssueHistoryPanel : MonoBehaviour
 {
     [Serializable] public sealed class Position { public float x, y, z; }
     [Serializable] public sealed class Issue {
-        public string id, title, description, priority, status, createdAt, updatedAt;
+        public string id, title, description, priority, status, createdAt, updatedAt, snapshotUrl;
         public Position position;
     }
     [Serializable] private sealed class IssueResult { public Issue data; }
     [Serializable] private sealed class IssueList { public Issue[] data; }
     [Serializable] private sealed class Content { public string title, description, priority; }
-    [Serializable] private sealed class Location { public Position position; }
+    [Serializable] private sealed class Location { public Position position; public string snapshot; }
 
     public bool IsOpen => IsRemarking || (panel != null && panel.activeSelf);
     public bool IsRemarking { get; private set; }
@@ -46,6 +46,7 @@ public sealed class IssueHistoryPanel : MonoBehaviour
     private int priorityIndex;
     // A draft remains attached to its server and ID when navigating or retrying.
     private readonly Dictionary<string, Content> drafts = new Dictionary<string, Content>();
+    private IssuePhotoView photoView;
 
     public void Initialize(Transform parent, ArProbe owner, Action returnToReport)
     {
@@ -78,6 +79,8 @@ public sealed class IssueHistoryPanel : MonoBehaviour
 
         detailPage = Page(rect, "Issue details");
         var detail = detailPage.GetComponent<RectTransform>();
+        photoView = gameObject.AddComponent<IssuePhotoView>();
+        photoView.Initialize(detail, parent);
         back = IssueReportForm.ButtonAt(detail, "返回列表", 0, 0.03f, 0.97f, () => {
             KeepDraft(); selectedId = null; ShowPage(); BeginLoad();
         });
@@ -93,7 +96,7 @@ public sealed class IssueHistoryPanel : MonoBehaviour
         // Existing API content has no character limit. Never truncate it when opening the editor.
         title.characterLimit = description.characterLimit = 0;
         metadata = IssueReportForm.Label(detail, 26);
-        metadata.rectTransform.offsetMin = new Vector2(25, 505);
+        metadata.rectTransform.offsetMin = new Vector2(25, 735);
         metadata.rectTransform.offsetMax = new Vector2(-25, -10);
         title.onValueChanged.AddListener(_ => KeepDraft());
         description.onValueChanged.AddListener(_ => KeepDraft());
@@ -136,7 +139,7 @@ public sealed class IssueHistoryPanel : MonoBehaviour
 
     public void Hide()
     {
-        CancelLoad(); KeepDraft(); panel.SetActive(false);
+        CancelLoad(); KeepDraft(); photoView.Clear(); panel.SetActive(false);
     }
 
     public void HideRemarkControls() { if (IsRemarking) remarkPanel.SetActive(false); }
@@ -160,6 +163,7 @@ public sealed class IssueHistoryPanel : MonoBehaviour
 
     private void ShowPage()
     {
+        photoView.Clear();
         listPage.SetActive(selectedId == null); detailPage.SetActive(selectedId != null);
     }
 
@@ -229,7 +233,7 @@ public sealed class IssueHistoryPanel : MonoBehaviour
         foreach (var issue in issues)
         {
             if (issue == null || string.IsNullOrEmpty(issue.id)) throw new ArgumentException("Invalid issue");
-            var button = IssueReportForm.ButtonAt(rows, issue.title + "\n" + InspectionUi.Priority(issue.priority) + "优先级 · " + InspectionUi.Status(issue.status) + "\n无快照 · 已同步", 0, 0, 1, () => {
+            var button = IssueReportForm.ButtonAt(rows, issue.title + "\n" + InspectionUi.Priority(issue.priority) + "优先级 · " + InspectionUi.Status(issue.status) + "\n" + (string.IsNullOrEmpty(issue.snapshotUrl) ? "无快照" : "有现场快照") + " · 已同步", 0, 0, 1, () => {
                 selectedId = issue.id; detailLoaded = false; title.SetTextWithoutNotify(""); description.SetTextWithoutNotify("");
                 priorityIndex = 1; priorityLabel.text = "优先级：中"; metadata.text = "正在加载…";
                 ShowPage(); BeginLoad();
@@ -267,6 +271,7 @@ public sealed class IssueHistoryPanel : MonoBehaviour
 
     private void RenderDetail(Issue issue)
     {
+        photoView.Show(server, issue.id, issue.snapshotUrl, issue.updatedAt);
         metadata.text = "状态：" + InspectionUi.Status(issue.status) + "\n创建：" + InspectionUi.Time(issue.createdAt) +
             "  更新：" + InspectionUi.Time(issue.updatedAt) + "\n编号：" + issue.id;
         loadedContent = new Content { title = issue.title, description = issue.description, priority = issue.priority };
@@ -351,7 +356,7 @@ public sealed class IssueHistoryPanel : MonoBehaviour
         if (UnityEngine.XR.ARFoundation.ARSession.state != UnityEngine.XR.ARFoundation.ARSessionState.SessionTracking || !probe.HasTrackedDraft)
         { remarkMessage.text = "定位暂不可用，请重新扫描后保存。"; yield break; }
         var point = probe.CurrentPosition;
-        var body = JsonUtility.ToJson(new Location { position = new Position { x = point.x, y = point.y, z = point.z } });
+        var body = JsonUtility.ToJson(new Location { snapshot = GetComponent<IssueReportForm>().ConfirmedSnapshot, position = new Position { x = point.x, y = point.y, z = point.z } });
         bool succeeded = false;
         SetBusy(true); remarkMessage.text = "正在保存位置…";
         using (var request = new UnityWebRequest(Endpoint + "/position", "PATCH"))
