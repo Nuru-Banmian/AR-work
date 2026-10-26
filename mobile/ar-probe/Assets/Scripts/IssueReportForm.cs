@@ -6,8 +6,6 @@ using UnityEngine.UI;
 
 public sealed class IssueReportForm : MonoBehaviour
 {
-    [Serializable] private sealed class Position { public float x, y, z; }
-    [Serializable] private sealed class CreateIssue { public string title, description, priority, snapshot; public Position position; }
     [Serializable] private sealed class HealthData { public string status; }
     [Serializable] private sealed class Health { public HealthData data; }
     [Serializable] private sealed class PendingRequest { public string key, body, server, endpoint; }
@@ -149,7 +147,7 @@ public sealed class IssueReportForm : MonoBehaviour
         try
         {
             var pending = JsonUtility.FromJson<PendingRequest>(stored);
-            var draft = JsonUtility.FromJson<CreateIssue>(pending.body);
+            var draft = JsonUtility.FromJson<ReportPayload>(pending.body);
             if (string.IsNullOrEmpty(pending.key) || string.IsNullOrEmpty(pending.server) || draft.position == null)
                 throw new ArgumentException("Invalid pending report");
             local.Add(pending.server, pending.endpoint ?? "/api/issues", pending.body, pending.key, true);
@@ -221,8 +219,8 @@ public sealed class IssueReportForm : MonoBehaviour
         if (string.IsNullOrWhiteSpace(title.text)) { message.text = "请填写问题标题。"; yield break; }
         if (string.IsNullOrEmpty(reportSnapshot)) { message.text = "请返回现场拍摄并确认快照。"; yield break; }
         var point = lockedPosition;
-        var payload = new CreateIssue { title = title.text.Trim(), description = description.text,
-            snapshot = reportSnapshot, priority = priorities[priorityIndex], position = new Position { x = point.x, y = point.y, z = point.z } };
+        var payload = new ReportPayload { title = title.text.Trim(), description = description.text,
+            snapshot = reportSnapshot, priority = priorities[priorityIndex], position = new IssueHistoryPanel.Position { x = point.x, y = point.y, z = point.z } };
         try {
             var entry = local.Add(draftServer ?? activeServer, "/api/reports", JsonUtility.ToJson(payload));
             probe.KeepQueuedMarker(entry.server, entry.key);

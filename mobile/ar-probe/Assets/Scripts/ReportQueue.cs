@@ -3,6 +3,12 @@ using System.IO;
 using System.Linq;
 using UnityEngine;
 
+[Serializable] public sealed class ReportPayload
+{
+    public string title, description, priority, snapshot;
+    public IssueHistoryPanel.Position position;
+}
+
 // Each complete request (including photo bytes) is one atomic durable document.
 // Callers receive copies: edits cannot mutate a frozen request in memory.
 public sealed class ReportQueue

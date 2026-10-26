@@ -250,7 +250,10 @@ public sealed class IssueHistoryPanel : MonoBehaviour
     public void RefreshLocalRows()
     {
         if (panel == null || !panel.activeSelf || selectedId != null) return;
+        float scroll = listPage.GetComponent<ScrollRect>().verticalNormalizedPosition;
         RenderList(remoteRows);
+        listPage.GetComponent<ScrollRect>().verticalNormalizedPosition = scroll;
+        foreach (var button in rows.GetComponentsInChildren<Button>()) button.interactable = !busy;
     }
 
     public void ApplyLiveIssues(string address, Issue[] issues)
