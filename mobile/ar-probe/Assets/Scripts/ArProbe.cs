@@ -7,6 +7,7 @@ using UnityEngine.SpatialTracking;
 using UnityEngine.UI;
 using UnityEngine.XR.ARFoundation;
 using UnityEngine.XR.ARSubsystems;
+using UnityEngine.XR.Management;
 
 // Shared plane tracking for the standalone probe and inspection app.
 public sealed class ArProbe : MonoBehaviour
@@ -16,12 +17,17 @@ public sealed class ArProbe : MonoBehaviour
     public Material markerMaterial;
     public Material planeMaterial;
     private ARSession session;
+    private ARInputManager inputManager;
     private ARPlaneManager planes;
     private ARRaycastManager raycasts;
     private ARAnchorManager anchors;
     private AROcclusionManager occlusion;
+    private GameObject originRoot, cameraHud;
+    private Coroutine starting;
+    public bool CameraActive { get; private set; }
     private bool useDepth;
-    private Button depthToggle;
+    public const string DepthPreference = "arwork.depth-assisted";
+    public bool DepthAssistanceEnabled => PlayerPrefs.GetInt(DepthPreference, 0) == 1;
     private ARAnchor markerAnchor;
     private GameObject marker;
     private Text status;
@@ -39,6 +45,14 @@ public sealed class ArProbe : MonoBehaviour
     {
         Screen.sleepTimeout = SleepTimeout.NeverSleep;
         Application.targetFrameRate = inspectionMode ? 30 : 60;
+        useDepth = DepthAssistanceEnabled;
+        if (inspectionMode)
+        {
+            var background = new GameObject("Page background").AddComponent<Camera>();
+            background.cullingMask = 0; background.depth = -10;
+            background.clearFlags = CameraClearFlags.SolidColor;
+            background.backgroundColor = new Color(0.02f, 0.05f, 0.08f);
+        }
         CreateUi();
         var sessionObject = new GameObject("AR Session");
         sessionObject.SetActive(false);
@@ -46,7 +60,8 @@ public sealed class ArProbe : MonoBehaviour
         if (inspectionMode) session.matchFrameRateRequested = false;
         session.attemptUpdate = false;
         session.enabled = false;
-        sessionObject.AddComponent<ARInputManager>();
+        inputManager = sessionObject.AddComponent<ARInputManager>();
+        inputManager.enabled = !inspectionMode;
         sessionObject.SetActive(true);
 
         var originObject = new GameObject("XR Origin");
@@ -85,13 +100,38 @@ public sealed class ArProbe : MonoBehaviour
         planes.planesChanged += OnPlanesChanged;
         raycasts = originObject.AddComponent<ARRaycastManager>();
         anchors = originObject.AddComponent<ARAnchorManager>();
-        originObject.SetActive(true);
+        originRoot = originObject;
+        originObject.SetActive(!inspectionMode);
         origin.RequestedTrackingOriginMode = XROrigin.TrackingOriginMode.Device;
     }
 
     private IEnumerator Start()
     {
-        yield return StartAr();
+        if (!inspectionMode) yield return StartAr();
+    }
+
+    public void EnterCamera()
+    {
+        if (CameraActive) return;
+        CameraActive = true;
+        cameraHud.SetActive(true);
+        GetComponent<IssueLiveUpdates>()?.ShowLabel(false);
+        starting = StartCoroutine(StartAr());
+    }
+
+    public void LeaveCamera()
+    {
+        CameraActive = false;
+        if (starting != null) StopCoroutine(starting);
+        starting = null;
+        session.enabled = false;
+        originRoot.SetActive(false);
+        inputManager.enabled = false;
+        var manager = XRGeneralSettings.Instance != null ? XRGeneralSettings.Instance.Manager : null;
+        if (manager != null && manager.isInitializationComplete) manager.StopSubsystems();
+        cameraHud.SetActive(false);
+        GetComponent<IssueLiveUpdates>()?.ShowLabel(true);
+        Debug.Log("ARWORK_CAMERA_ACTIVE=false");
     }
 
     private IEnumerator StartAr()
@@ -100,18 +140,33 @@ public sealed class ArProbe : MonoBehaviour
 #if UNITY_ANDROID && !UNITY_EDITOR
         if (!UnityEngine.Android.Permission.HasUserAuthorizedPermission(UnityEngine.Android.Permission.Camera))
         {
-            UnityEngine.Android.Permission.RequestUserPermission(UnityEngine.Android.Permission.Camera);
+            bool answered = false;
+            var callbacks = new UnityEngine.Android.PermissionCallbacks();
+            callbacks.PermissionGranted += _ => answered = true;
+            callbacks.PermissionDenied += _ => answered = true;
+            callbacks.PermissionDeniedAndDontAskAgain += _ => answered = true;
+            UnityEngine.Android.Permission.RequestUserPermission(UnityEngine.Android.Permission.Camera, callbacks);
             float deadline = Time.realtimeSinceStartup + 30f;
             while (!UnityEngine.Android.Permission.HasUserAuthorizedPermission(UnityEngine.Android.Permission.Camera)
-                   && Time.realtimeSinceStartup < deadline)
+                   && !answered && Time.realtimeSinceStartup < deadline)
                 yield return null;
             if (!UnityEngine.Android.Permission.HasUserAuthorizedPermission(UnityEngine.Android.Permission.Camera))
             {
-                notice.text = "请在系统设置中允许使用相机，然后重新打开应用。";
+                notice.text = "未获得相机权限，可返回查看记录；允许权限后重新进入采集。";
                 yield break;
             }
         }
 #endif
+        var manager = XRGeneralSettings.Instance != null ? XRGeneralSettings.Instance.Manager : null;
+        if (manager == null) { notice.text = "此设备无法启动定位服务，可返回查看记录。"; yield break; }
+        if (!manager.isInitializationComplete) yield return manager.InitializeLoader();
+        if (inspectionMode && !CameraActive) yield break;
+        if (manager.activeLoader == null) { notice.text = "此设备无法启动定位服务，可返回查看记录。"; yield break; }
+        manager.StartSubsystems();
+        inputManager.enabled = true;
+        originRoot.SetActive(true);
+        ApplyDepth();
+        Debug.Log("ARWORK_CAMERA_ACTIVE=true");
         yield return ARSession.CheckAvailability();
         if (ARSession.state == ARSessionState.NeedsInstall)
         {
@@ -151,6 +206,7 @@ public sealed class ArProbe : MonoBehaviour
 
     private void Update()
     {
+        if (inspectionMode && !CameraActive) return;
         foreach (var plane in planes.trackables)
         {
             // The visualizer owns renderer visibility. Disable it when the whole session loses tracking.
@@ -158,7 +214,9 @@ public sealed class ArProbe : MonoBehaviour
             if (visualizer != null) visualizer.enabled = ARSession.state == ARSessionState.SessionTracking && plane.subsumedBy == null;
         }
         status.text = ARSession.state == ARSessionState.SessionTracking ? "园区巡检 · 定位正常" : "园区巡检 · 正在识别环境";
-        if (depthToggle != null) depthToggle.interactable = reportForm == null || !reportForm.PositionLocked;
+        if (inspectionMode && useDepth)
+            status.text += occlusion.currentEnvironmentDepthMode == EnvironmentDepthMode.Disabled
+                ? " · 深度准备中/不可用" : " · 深度辅助已启用";
         if (ARSession.state != ARSessionState.SessionTracking || Input.touchCount == 0) return;
         if (reportForm != null && reportForm.PositionLocked) return;
         var touch = Input.GetTouch(0);
@@ -211,15 +269,19 @@ public sealed class ArProbe : MonoBehaviour
         notice.text = "请点击已识别的地面或墙面。";
     }
 
-    private void ToggleDepth()
+    public void SetDepthAssistance(bool enabled)
     {
-        if (reportForm != null && reportForm.PositionLocked) return;
-        useDepth = !useDepth;
+        useDepth = enabled;
+        PlayerPrefs.SetInt(DepthPreference, enabled ? 1 : 0); PlayerPrefs.Save();
+        ApplyDepth();
+    }
+
+    private void ApplyDepth()
+    {
+        if (occlusion == null) return;
         occlusion.requestedEnvironmentDepthMode = useDepth ? EnvironmentDepthMode.Fastest : EnvironmentDepthMode.Disabled;
-        occlusion.enabled = useDepth;
-        depthToggle.GetComponentInChildren<Text>().text = useDepth ? "深度辅助：开" : "深度辅助：关";
-        notice.text = useDepth ? "已开启深度辅助。若设备发热或卡顿，可关闭以降低负载。"
-            : "已关闭深度辅助，请对准有纹理的地面或墙面。";
+        occlusion.enabled = CameraActive && useDepth;
+        Debug.Log("ARWORK_DEPTH_REQUESTED=" + useDepth + " camera=" + CameraActive);
     }
 
     private void PlaceMarker(ARAnchor newAnchor, ARRaycastHit hit, string source)
@@ -326,6 +388,7 @@ public sealed class ArProbe : MonoBehaviour
         safe.anchorMax = new Vector2(area.xMax / Screen.width, area.yMax / Screen.height);
         safe.offsetMin = safe.offsetMax = Vector2.zero;
         var top = Panel(safe, "Status panel", new Vector2(0, 1), new Vector2(1, 1), new Vector2(0.5f, 1), 200);
+        cameraHud = top.gameObject;
         status = Label(top, 30);
         status.rectTransform.offsetMin = new Vector2(24, 130);
         status.rectTransform.offsetMax = new Vector2(-24, -20);
@@ -335,14 +398,9 @@ public sealed class ArProbe : MonoBehaviour
         notice.rectTransform.offsetMax = new Vector2(-24, -70);
         if (inspectionMode)
         {
-            var bottom = Panel(safe, "操作", Vector2.zero, new Vector2(1, 0), new Vector2(0.5f, 0), 130);
-            depthToggle = MakeButton(bottom, "深度辅助：关", 0.03f, 0.97f);
-            depthToggle.onClick.AddListener(ToggleDepth);
-        }
-        if (inspectionMode)
-        {
             reportForm = gameObject.AddComponent<IssueReportForm>();
             reportForm.Initialize(safe, this);
+            cameraHud.SetActive(false);
         }
     }
 

@@ -84,9 +84,11 @@ public sealed class IssueLiveUpdates : MonoBehaviour
         label.rectTransform.anchorMin = new Vector2(0, 1); label.rectTransform.anchorMax = Vector2.one;
         label.rectTransform.pivot = new Vector2(0.5f, 1);
         label.rectTransform.sizeDelta = new Vector2(-40, 100);
-        label.rectTransform.anchoredPosition = new Vector2(0, -200);
+        label.rectTransform.anchoredPosition = new Vector2(0, -10);
         SetState(state);
     }
+
+    public void ShowLabel(bool visible) { if (label != null) label.gameObject.SetActive(visible); }
 
     private void SetState(string value)
     {

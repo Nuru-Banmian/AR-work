@@ -21,7 +21,12 @@ public sealed class IssueHistoryPanel : MonoBehaviour
 
     public bool IsOpen => IsRemarking || (panel != null && panel.activeSelf);
     public bool IsRemarking { get; private set; }
-    public bool RemarkLocked => busy;
+    public bool Busy => busy && !loading;
+    private bool loading;
+    private Coroutine loadRoutine;
+    private UnityWebRequest loadRequest;
+    public bool RemarkLocked => busy || snapshotReady;
+    private bool snapshotReady;
     private ArProbe probe;
     private GameObject remarkPanel;
     private Text remarkMessage;
@@ -51,9 +56,9 @@ public sealed class IssueHistoryPanel : MonoBehaviour
         panel.GetComponent<Image>().color = new Color(0.02f, 0.05f, 0.08f, 0.98f);
         var rect = panel.GetComponent<RectTransform>();
         rect.anchorMin = Vector2.zero; rect.anchorMax = Vector2.one;
-        rect.offsetMin = new Vector2(0, 130); rect.offsetMax = new Vector2(0, -310);
-        close = IssueReportForm.ButtonAt(rect, "返回现场", 10, 0.03f, 0.48f, Close);
-        refresh = IssueReportForm.ButtonAt(rect, "刷新", 10, 0.52f, 0.97f, () => StartCoroutine(Load()));
+        rect.offsetMin = new Vector2(0, 120); rect.offsetMax = new Vector2(0, -120);
+        close = IssueReportForm.ButtonAt(rect, "记录首页", 10, 0.03f, 0.48f, Close);
+        refresh = IssueReportForm.ButtonAt(rect, "刷新", 10, 0.52f, 0.97f, BeginLoad);
         message = IssueReportForm.Label(rect, 27);
         message.rectTransform.anchorMax = new Vector2(1, 0);
         message.rectTransform.sizeDelta = new Vector2(-40, 125);
@@ -74,7 +79,7 @@ public sealed class IssueHistoryPanel : MonoBehaviour
         detailPage = Page(rect, "Issue details");
         var detail = detailPage.GetComponent<RectTransform>();
         back = IssueReportForm.ButtonAt(detail, "返回列表", 0, 0.03f, 0.97f, () => {
-            KeepDraft(); selectedId = null; ShowPage(); StartCoroutine(Load());
+            KeepDraft(); selectedId = null; ShowPage(); BeginLoad();
         });
         save = IssueReportForm.ButtonAt(detail, "保存内容", 80, 0.03f, 0.48f, () => StartCoroutine(Save()));
         remark = IssueReportForm.ButtonAt(detail, "重新标记", 80, 0.52f, 0.97f, BeginRemark);
@@ -121,8 +126,21 @@ public sealed class IssueHistoryPanel : MonoBehaviour
 
     public void Open(string address)
     {
-        server = address; selectedId = null; panel.SetActive(true); ShowPage(); StartCoroutine(Load());
+        if (Busy) return;
+        CancelLoad(); KeepDraft();
+        bool changedServer = server != address;
+        server = address; selectedId = null; detailLoaded = false;
+        if (changedServer) foreach (Transform child in rows) { child.gameObject.SetActive(false); Destroy(child.gameObject); }
+        panel.SetActive(true); ShowPage(); BeginLoad();
     }
+
+    public void Hide()
+    {
+        CancelLoad(); KeepDraft(); panel.SetActive(false);
+    }
+
+    public void HideRemarkControls() { if (IsRemarking) remarkPanel.SetActive(false); }
+    public void ShowRemarkControls() { if (IsRemarking) remarkPanel.SetActive(true); }
 
     private void Close()
     {
@@ -158,13 +176,25 @@ public sealed class IssueHistoryPanel : MonoBehaviour
 
     private string Endpoint => server + "/api/issues" + (selectedId == null ? "" : "/" + Uri.EscapeDataString(selectedId));
 
+    private void CancelLoad()
+    {
+        if (!loading) return;
+        loadRequest?.Abort();
+        if (loadRoutine != null) StopCoroutine(loadRoutine);
+        loadRequest?.Dispose(); loadRequest = null;
+        loadRoutine = null; loading = false; SetBusy(false);
+    }
+
+    private void BeginLoad() { if (!busy) loadRoutine = StartCoroutine(Load()); }
+
     private IEnumerator Load()
     {
         if (busy) yield break;
         GetComponent<IssueLiveUpdates>()?.Refresh();
-        KeepDraft(); SetBusy(true); message.text = "正在加载…";
+        KeepDraft(); loading = true; SetBusy(true); message.text = "正在加载…";
         using (var request = UnityWebRequest.Get(Endpoint))
         {
+            loadRequest = request;
             request.timeout = 15;
             yield return request.SendWebRequest();
             if (request.result != UnityWebRequest.Result.Success) message.text = InspectionUi.Error(request) + "草稿已保留，可点击刷新重试。";
@@ -177,7 +207,7 @@ public sealed class IssueHistoryPanel : MonoBehaviour
                         var issues = JsonUtility.FromJson<IssueList>(request.downloadHandler.text)?.data;
                         if (issues == null) throw new ArgumentException("Missing issue list");
                         RenderList(issues);
-                        message.text = issues.Length == 0 ? "暂无问题，返回现场即可上报。" : "共 " + issues.Length + " 个问题，点击查看详情。";
+                        message.text = issues.Length == 0 ? "暂无问题，点击新增问题开始记录。" : "共 " + issues.Length + " 个问题，点击查看详情。";
                     }
                     else
                     {
@@ -190,7 +220,7 @@ public sealed class IssueHistoryPanel : MonoBehaviour
                 catch (ArgumentException) { message.text = "返回数据异常，草稿已保留，请刷新重试。"; }
             }
         }
-        SetBusy(false);
+        loadRequest = null; loading = false; SetBusy(false);
     }
 
     private void RenderList(Issue[] issues)
@@ -199,10 +229,10 @@ public sealed class IssueHistoryPanel : MonoBehaviour
         foreach (var issue in issues)
         {
             if (issue == null || string.IsNullOrEmpty(issue.id)) throw new ArgumentException("Invalid issue");
-            var button = IssueReportForm.ButtonAt(rows, issue.title + "\n" + InspectionUi.Priority(issue.priority) + "优先级 · " + InspectionUi.Status(issue.status), 0, 0, 1, () => {
+            var button = IssueReportForm.ButtonAt(rows, issue.title + "\n" + InspectionUi.Priority(issue.priority) + "优先级 · " + InspectionUi.Status(issue.status) + "\n无快照 · 已同步", 0, 0, 1, () => {
                 selectedId = issue.id; detailLoaded = false; title.SetTextWithoutNotify(""); description.SetTextWithoutNotify("");
                 priorityIndex = 1; priorityLabel.text = "优先级：中"; metadata.text = "正在加载…";
-                ShowPage(); StartCoroutine(Load());
+                ShowPage(); BeginLoad();
             });
             button.gameObject.AddComponent<LayoutElement>().preferredHeight = 155;
         }
@@ -213,7 +243,11 @@ public sealed class IssueHistoryPanel : MonoBehaviour
     {
         if (address != server || !IsOpen || busy) return;
         KeepDraft();
-        if (selectedId == null) RenderList(issues);
+        if (selectedId == null)
+        {
+            RenderList(issues);
+            message.text = issues.Length == 0 ? "暂无问题，点击新增问题开始记录。" : "共 " + issues.Length + " 个问题，点击查看详情。";
+        }
         else foreach (var issue in issues)
         {
             if (issue.id != selectedId) continue;
@@ -275,27 +309,29 @@ public sealed class IssueHistoryPanel : MonoBehaviour
     private void BeginRemark()
     {
         if (busy || !detailLoaded || selectedId == null) return;
-        KeepDraft(); probe.BeginRemark(); hasRemarkPosition = false; IsRemarking = true;
+        KeepDraft(); probe.BeginRemark(); probe.EnterCamera(); hasRemarkPosition = false; snapshotReady = false; IsRemarking = true;
+        GetComponent<IssueReportForm>().ShowRemarkNavigation(true);
         panel.SetActive(false); remarkPanel.SetActive(true); SetBusy(false);
         remarkMessage.text = "请点击地面或墙面重新选点。保存成功后才替换原标记。";
     }
 
     public void MarkPositionSelected()
     {
-        hasRemarkPosition = true; confirmRemark.interactable = !busy;
+        hasRemarkPosition = true; snapshotReady = false; confirmRemark.GetComponentInChildren<Text>().text = "快照 / 下一步"; confirmRemark.interactable = !busy;
         remarkMessage.text = "新位置已选中。点击保存位置，或取消保留原标记。";
     }
 
     public void ClearPosition()
     {
-        hasRemarkPosition = false; confirmRemark.interactable = false;
+        hasRemarkPosition = false; snapshotReady = false; confirmRemark.interactable = false;
         remarkMessage.text = "请重新选点，原标记已保留。";
     }
 
     private void EndRemark(bool saved)
     {
         if (busy) return;
-        probe.FinishRemark(saved, server, selectedId); IsRemarking = false;
+        probe.FinishRemark(saved, server, selectedId); probe.LeaveCamera(); IsRemarking = false; snapshotReady = false;
+        GetComponent<IssueReportForm>().ShowRemarkNavigation(false);
         hasRemarkPosition = false; remarkPanel.SetActive(false); panel.SetActive(true);
         if (!saved) message.text = "已取消本次选点，原标记保留。请刷新核对已保存的位置。";
     }
@@ -303,6 +339,15 @@ public sealed class IssueHistoryPanel : MonoBehaviour
     private IEnumerator SavePosition()
     {
         if (busy || !IsRemarking || !hasRemarkPosition) yield break;
+        if (!snapshotReady)
+        {
+            GetComponent<IssueReportForm>().TakeSnapshot(() => {
+                snapshotReady = true; remarkPanel.SetActive(true);
+                confirmRemark.GetComponentInChildren<Text>().text = "保存位置";
+                remarkMessage.text = "快照已确认，保存位置后返回详情。";
+            });
+            yield break;
+        }
         if (UnityEngine.XR.ARFoundation.ARSession.state != UnityEngine.XR.ARFoundation.ARSessionState.SessionTracking || !probe.HasTrackedDraft)
         { remarkMessage.text = "定位暂不可用，请重新扫描后保存。"; yield break; }
         var point = probe.CurrentPosition;
