@@ -1,0 +1,16 @@
+# Unity-generated data and local build outputs
+**/[Ll]ibrary/
+**/[Tt]emp/
+**/[Oo]bj/
+**/[Ll]ogs/
+**/UserSettings/
+**/[Bb]uilds/
+**/MemoryCaptures/
+**/.vs/
+*.csproj
+*.sln
+*.apk
+*.aab
+*.keystore
+*.jks
+.local/

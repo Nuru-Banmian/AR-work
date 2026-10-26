@@ -540,3 +540,78 @@
 - 记录用户报告的安装成功，不将其等同于 AR 平面检测通过。检查本机安装记录及可执行文件，确认已有 Unity 2022.3.34f1c1；检查该编辑器的 PlaybackEngines 路径，未找到 AndroidPlayer、配套 SDK/adb、NDK 和 OpenJDK。依据 Unity 官方环境配置文档指导在 Unity Hub 给现有编辑器添加 Android 构建模块。本轮未安装电脑软件、未生成 APK，也未运行手机测试。
 
 核查来源：[Unity Android 环境设置](https://docs.unity.cn/Documentation/Manual/android-sdksetup.html)、[Google AR Foundation 运行时检查](https://developers.google.com/ar/develop/unity-arf/enable-arcore)。
+
+## P-015
+
+- 目标：用户确认 Android 模块已安装，继续准备真机 AR 测试包
+
+### Prompt 原文
+
+>  模块已安装
+
+### 结果
+
+- 采用
+- 检查发现新安装的是 Unity 2022.3.62f3c1，位于另一安装目录；其 AndroidPlayer、SDK/adb、NDK、OpenJDK 均存在。创建独立 mobile/ar-probe 工程并启动 Android 构建。真机是否通过平面检测仍需实际运行确认。
+
+## P-016
+
+- 目标：助手向子代理委派 Unity 兼容配置核查
+
+### Prompt 原文
+
+> 现在用户已安装 AR 服务和 Unity Android 模块。请只读查阅 Unity 2022.3 LTS 对应 AR Foundation 5.1 / ARCore XR Plugin 的官方文档，给出最小真机探测工程的可靠配置：XR loader 初始化、水平面检测、触摸 raycast、Android 权限/图形 API/ARM64，以及 Android 16 的主要兼容风险。只返回直接相关 API 和来源链接，不修改文件、不派生子代理。
+
+### 结果
+
+- 修改后采用
+- 最初按 5.1 查询；发现新编辑器内置 5.2.0 后追加版本纠正。采用 Optional 方式做侧载兼容性探测，最终以 5.2.2 文档和本地包源码为准。
+
+## P-017
+
+- 目标：助手纠正子代理核查的编辑器与包版本
+
+### Prompt 原文
+
+> 本机实际新装 Unity 2022.3.62f3c1，Android SDK/NDK/OpenJDK 齐全；编辑器内置 AR Foundation 与 ARCore 包均为 5.2.0，计划使用这组版本。请将兼容配置结论以 5.2 官方文档复核，特别是 Android 16 真机侧载与 16 KB 页兼容性；不用调查已过时的 5.1 包版本。
+
+### 结果
+
+- 修改后采用
+- 子代理根据官方 changelog 指出 5.2.2 才增加该分支 ARCore 原生插件的 16 KB 页支持；主代理放弃原计划的 5.2.0，改为同时固定 AR Foundation 和 ARCore 5.2.2，并确认依赖已实际下载。
+
+## P-018
+
+- 目标：助手委派本次 AR 探测工程只读检查
+
+### Prompt 原文
+
+> 请只读审查本次最小 AR 探测工程 D:\work\myself\AI-try\AR-work\mobile\ar-probe 下 Assets/Scripts/ArProbe.cs、Assets/Editor/ProbeBuild.cs 和 build.ps1。重点找阻止真机运行、AR 初始化、相机姿态、UI 误放置、平面 raycast 的实际缺陷。参考本地已下载 Library/PackageCache 的准确 5.2.2 API。不要修改文件，不要派生子代理，只反馈可操作问题和证据；这不是整项目或业务代码验收。
+
+### 结果
+
+- 采用
+- 审查针对当前探测代码；具体发现、修复和最终构建结果在下方记录。该审查不代替用户手机的真实运行。
+
+检查后修改：采用子代理指出的锚点问题，用 `ARAnchorManager.AttachAnchor` 把方块绑定到平面，并在清除或重新放置时释放旧锚点。放弃原先会重复使用缓存支持状态的 `RETRY AR` 按钮，改成 `EXIT APP`，提示恢复权限或网络后重开应用。两项修正均进入后续构建。
+
+构建排障：首次 Unity 构建的 C# 与 IL2CPP 阶段完成，Gradle 因无法解析 Android Gradle Plugin 7.4.2 失败。核查发现 Google Maven 下载地址 TLS 连接失败；工程内添加阿里云 Google Maven 镜像，保留 Maven Central 和 Google 源。镜像首次构建仍发生插件解析失败，随后独立运行相同生成工程的 Gradle `help --info`，依赖成功下载并返回 `BUILD SUCCESSFUL in 44s`；这仅证明 Gradle 配置阶段通过，不能当作 APK 打包成功。没有修改系统代理或全局 Gradle 配置。另将 PowerShell 的等待方式改为等待 Unity 主进程退出，避免被 Gradle/UPM 子进程长期挂住。
+
+## P-019
+
+- 目标：用户要求从中断处继续完成 AR 测试包准备
+
+### Prompt 原文
+
+> 继续
+
+### 结果
+
+- 采用
+- 先检查中断前的进程与日志，确认 Gradle 依赖解析检查已成功，随后从现有源码和缓存重新执行 Unity Android 构建。最终打包及 APK 校验结果在下方记录。
+
+最终验证：Unity 完整 Android 构建成功，生成 `mobile/ar-probe/Builds/AR-Device-Probe.apk`，大小 17,974,686 字节，SHA-256 为 `df9ad35481629a68cfd5dbcf6e5bbf48b093e498ea1633d58d7a88b2681d74e8`。`apksigner verify` 通过，`aapt dump badging` 确认包名 `com.arwork.deviceprobe`、ARM64、最低 API 26、目标 API 35，以及 CAMERA/INTERNET 权限。`verify_apk.py` 检查 ZIP CRC、全部 7 个 ARM64 原生库的 ELF LOAD 段 16 KB 对齐与未压缩库 ZIP 对齐要求，全部通过。本次库均为压缩存储；结果保存为 `verification.json`。
+
+核心代码解释：`ArProbe` 创建 AR 会话、跟踪相机、水平面/射线/锚点管理器；取得相机权限和 AR 服务可用状态后启用会话。触摸先经过 UI raycast 排除，再命中正在跟踪的向上水平面，附着锚点并放置 10 cm 方块。`ProbeBuild` 固定 Android ARM64/IL2CPP/OpenGLES3 配置，生成场景与材质并调用 Unity 构建。构建失败以非成功结果结束。`verify_apk.py` 直接解析实际 APK 和 ELF 头部，不以编辑器版本替代兼容性检查。
+
+交付边界：测试包和源码已准备；尚未在用户手机上安装或运行本测试包，也未验证真实平面识别、锚点稳定性或 UI 操作。Go/React 与问题上报业务流程尚未实现。APK、Unity 缓存、原始构建日志及签名密钥不纳入 Git；源码、复现脚本、脱敏验证结果和本日志纳入本次本地提交。未推送远程。

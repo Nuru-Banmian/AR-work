@@ -1,0 +1,77 @@
+{
+  "apk": "AR-Device-Probe.apk",
+  "bytes": 17974686,
+  "sha256": "df9ad35481629a68cfd5dbcf6e5bbf48b093e498ea1633d58d7a88b2681d74e8",
+  "zipIntegrity": "passed",
+  "arm64And16KbAlignment": "passed",
+  "libraries": [
+    {
+      "name": "lib/arm64-v8a/libUnityARCore.so",
+      "loadAlignments": [
+        16384,
+        16384,
+        16384,
+        16384
+      ],
+      "compressed": true
+    },
+    {
+      "name": "lib/arm64-v8a/libarcore_sdk_c.so",
+      "loadAlignments": [
+        16384,
+        16384,
+        16384
+      ],
+      "compressed": true
+    },
+    {
+      "name": "lib/arm64-v8a/libarcore_sdk_jni.so",
+      "loadAlignments": [
+        16384,
+        16384,
+        16384
+      ],
+      "compressed": true
+    },
+    {
+      "name": "lib/arm64-v8a/libarpresto_api.so",
+      "loadAlignments": [
+        16384,
+        16384,
+        16384
+      ],
+      "compressed": true
+    },
+    {
+      "name": "lib/arm64-v8a/libil2cpp.so",
+      "loadAlignments": [
+        16384,
+        16384,
+        16384,
+        16384
+      ],
+      "compressed": true
+    },
+    {
+      "name": "lib/arm64-v8a/libmain.so",
+      "loadAlignments": [
+        16384,
+        16384,
+        16384,
+        16384
+      ],
+      "compressed": true
+    },
+    {
+      "name": "lib/arm64-v8a/libunity.so",
+      "loadAlignments": [
+        16384,
+        16384,
+        16384,
+        16384
+      ],
+      "compressed": true
+    }
+  ],
+  "deviceRuntime": "not tested"
+}

@@ -1,0 +1,26 @@
+pluginManagement {
+    repositories {
+        **ARTIFACTORYREPOSITORY**
+        mavenCentral()
+        // Google Maven mirror for networks where dl.google.com is unavailable.
+        maven { url 'https://maven.aliyun.com/repository/google' }
+        google()
+        gradlePluginPortal()
+    }
+}
+
+include ':launcher', ':unityLibrary'
+**INCLUDES**
+
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.PREFER_SETTINGS)
+    repositories {
+        **ARTIFACTORYREPOSITORY**
+        mavenCentral()
+        maven { url 'https://maven.aliyun.com/repository/google' }
+        google()
+        flatDir {
+            dirs "${project(':unityLibrary').projectDir}/libs"
+        }
+    }
+}
