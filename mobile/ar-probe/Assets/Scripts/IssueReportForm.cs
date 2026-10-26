@@ -1,6 +1,5 @@
 using System;
 using System.Collections;
-using System.Text;
 using UnityEngine;
 using UnityEngine.Networking;
 using UnityEngine.UI;
@@ -9,8 +8,6 @@ public sealed class IssueReportForm : MonoBehaviour
 {
     [Serializable] private sealed class Position { public float x, y, z; }
     [Serializable] private sealed class CreateIssue { public string title, description, priority, snapshot; public Position position; }
-    [Serializable] private sealed class SavedIssue { public string id, title, priority, status, snapshotUrl; }
-    [Serializable] private sealed class Success { public SavedIssue data; }
     [Serializable] private sealed class HealthData { public string status; }
     [Serializable] private sealed class Health { public HealthData data; }
     [Serializable] private sealed class PendingRequest { public string key, body, server, endpoint; }
@@ -31,13 +28,13 @@ public sealed class IssueReportForm : MonoBehaviour
     public bool PositionLocked { get => capturing || (history != null && history.IsRemarking ? history.RemarkLocked : positionLocked || !probe.CameraActive || (history != null && history.IsOpen)); private set => positionLocked = value; }
     private IssueHistoryPanel history;
     private IssueLiveUpdates live;
+    private LocalReports local;
     private ArProbe probe;
     private InputField address, title, description;
     private Text message, priorityLabel, editLabel;
     private Button edit, submit, priority, test, historyButton;
-    private bool hasPosition, busy, saved;
+    private bool hasPosition, busy;
     private int priorityIndex = 1;
-    private string requestKey, requestBody, requestAddress, requestEndpoint;
     private string confirmedSnapshot, reportSnapshot;
     public string ConfirmedSnapshot => confirmedSnapshot;
     private Vector3 lockedPosition;
@@ -127,7 +124,7 @@ public sealed class IssueReportForm : MonoBehaviour
         priorityLabel = priority.GetComponentInChildren<Text>();
         edit = ButtonAt(rect, "调整位置", 310, 0.52f, 0.97f, EditOrCancel);
         editLabel = edit.GetComponentInChildren<Text>();
-        submit = ButtonAt(rect, "提交问题", 235, 0.03f, 0.97f, () => StartCoroutine(Submit()));
+        submit = ButtonAt(rect, "保存到本地并返回首页", 235, 0.03f, 0.97f, () => StartCoroutine(Submit()));
         message = Label(rect, 27);
         var textRect = message.rectTransform;
         textRect.anchorMin = Vector2.zero; textRect.anchorMax = new Vector2(1, 0);
@@ -135,6 +132,8 @@ public sealed class IssueReportForm : MonoBehaviour
         textRect.anchoredPosition = new Vector2(0, 10);
         message.text = "先点击地面或墙面选点，再填写问题。";
         ButtonAt(rect, "返回首页（保留当前草稿）", 650, 0.03f, 0.97f, () => { if (!NavigationLocked) ShowHome(); });
+        local = gameObject.AddComponent<LocalReports>();
+        local.Initialize(parent, () => activeServer, () => history.RefreshLocalRows(), ShowHome);
         RestorePending();
         live.SetServer(activeServer);
         reportPanel.SetActive(false); settingsPanel.SetActive(false); captureControls.SetActive(false); previewPanel.SetActive(false);
@@ -153,13 +152,8 @@ public sealed class IssueReportForm : MonoBehaviour
             var draft = JsonUtility.FromJson<CreateIssue>(pending.body);
             if (string.IsNullOrEmpty(pending.key) || string.IsNullOrEmpty(pending.server) || draft.position == null)
                 throw new ArgumentException("Invalid pending report");
-            requestKey = pending.key; requestBody = pending.body; requestAddress = pending.server; requestEndpoint = pending.endpoint ?? "/api/issues";
-            draftServer = pending.server; title.text = draft.title; description.text = draft.description;
-            priorityIndex = Array.IndexOf(priorities, draft.priority);
-            if (priorityIndex < 0) throw new ArgumentException("Invalid pending priority");
-            priorityLabel.text = "优先级：" + InspectionUi.Priority(draft.priority);
-            PositionLocked = hasPosition = true;
-            message.text = "有待确认的上报，请点击提交重试，不会重复创建。";
+            local.Add(pending.server, pending.endpoint ?? "/api/issues", pending.body, pending.key, true);
+            PendingReportStore.Delete(); PlayerPrefs.DeleteKey(PendingPreference); PlayerPrefs.Save();
         }
         catch (Exception exception)
         {
@@ -178,19 +172,9 @@ public sealed class IssueReportForm : MonoBehaviour
 
     private void EditOrCancel()
     {
-        if (busy || (!saved && requestKey != null) || (!saved && draftServer != activeServer)) return;
-        if (saved)
-        {
-            ClearSnapshot();
-            draftServer = activeServer;
-            saved = false; hasPosition = false; PositionLocked = false;
-            requestKey = requestBody = requestAddress = null;
-            title.text = ""; description.text = "";
-            message.text = "请选取下一个位置。已提交的标记会保留。";
-        }
-        else if (PositionLocked) { PositionLocked = false; message.text = "内容已保留，请点击表面调整位置。"; }
-        else if (!hasPosition) { message.text = "请先点击地面或墙面选点。"; }
-        else { lockedPosition = probe.CurrentPosition; PositionLocked = true; message.text = "位置已确认，请填写问题。"; }
+        if (busy || draftServer != activeServer) return;
+        PositionLocked = false;
+        message.text = "内容已保留，请点击表面调整位置。";
         reportPanel.SetActive(false); captureControls.SetActive(true); PositionLocked = false;
         ClearSnapshot(); probe.EnterCamera();
         RefreshControls();
@@ -232,68 +216,36 @@ public sealed class IssueReportForm : MonoBehaviour
 
     private IEnumerator Submit()
     {
-        if (busy || saved || !positionLocked || !hasPosition) yield break;
+        if (busy || !positionLocked || !hasPosition) yield break;
 
         if (string.IsNullOrWhiteSpace(title.text)) { message.text = "请填写问题标题。"; yield break; }
-        if (requestKey == null)
-        {
-            if (string.IsNullOrEmpty(reportSnapshot)) { message.text = "请返回现场拍摄并确认快照。"; yield break; }
-            var point = lockedPosition;
-            var payload = new CreateIssue { title = title.text.Trim(), description = description.text,
-                snapshot = reportSnapshot, priority = priorities[priorityIndex], position = new Position { x = point.x, y = point.y, z = point.z } };
-            requestEndpoint = "/api/reports";
-            requestKey = Guid.NewGuid().ToString("N");
-            requestBody = JsonUtility.ToJson(payload);
-            requestAddress = draftServer ?? activeServer;
-            try {
-                PendingReportStore.Save(JsonUtility.ToJson(new PendingRequest {
-                    key = requestKey, body = requestBody, server = requestAddress, endpoint = requestEndpoint }));
-            } catch (Exception exception) {
-                requestKey = requestBody = requestAddress = requestEndpoint = null;
-                message.text = "待提交请求保存失败，图片和内容仍保留，请重试。"; Debug.LogException(exception); yield break;
-            }
+        if (string.IsNullOrEmpty(reportSnapshot)) { message.text = "请返回现场拍摄并确认快照。"; yield break; }
+        var point = lockedPosition;
+        var payload = new CreateIssue { title = title.text.Trim(), description = description.text,
+            snapshot = reportSnapshot, priority = priorities[priorityIndex], position = new Position { x = point.x, y = point.y, z = point.z } };
+        try {
+            var entry = local.Add(draftServer ?? activeServer, "/api/reports", JsonUtility.ToJson(payload));
+            probe.KeepQueuedMarker(entry.server, entry.key);
+        } catch (Exception error) {
+            message.text = "本地保存失败，图片和内容仍保留，请重试。"; Debug.LogException(error); yield break;
         }
-        busy = true; RefreshControls(); message.text = "正在提交…";
-        using (var request = new UnityWebRequest(requestAddress + requestEndpoint, "POST"))
-        {
-            request.uploadHandler = new UploadHandlerRaw(Encoding.UTF8.GetBytes(requestBody));
-            request.downloadHandler = new DownloadHandlerBuffer();
-            request.SetRequestHeader("Idempotency-Key", requestKey);
-            request.SetRequestHeader("Content-Type", "application/json"); request.timeout = 15;
-            yield return request.SendWebRequest();
-            if (request.result == UnityWebRequest.Result.Success)
-            {
-                SavedIssue issue = null;
-                try { issue = JsonUtility.FromJson<Success>(request.downloadHandler.text)?.data; } catch (ArgumentException) { }
-                if (issue != null && !string.IsNullOrEmpty(issue.id) && (requestEndpoint != "/api/reports" || !string.IsNullOrEmpty(issue.snapshotUrl)))
-                {
-                    saved = true; probe.KeepSubmittedMarker(requestAddress, issue.id);
-                    live.Refresh();
-                    try { PendingReportStore.Delete(); PlayerPrefs.DeleteKey(PendingPreference); PlayerPrefs.Save(); }
-                    catch (Exception exception) { Debug.LogException(exception); }
-                    message.text = "上报成功：" + issue.title + "\n" + InspectionUi.Priority(issue.priority) + "优先级 · " + InspectionUi.Status(issue.status);
-                    Debug.Log("ARWORK_SAVED_ID=" + issue.id);
-                }
-                else message.text = "尚未确认提交结果，内容已保留，请再次提交。";
-            }
-            else
-            {
-                message.text = InspectionUi.Error(request) + "内容已保留，请再次提交。";
-            }
-        }
-        busy = false; RefreshControls();
+        // The durable queue owns the complete request now; another capture is independent.
+        ClearSnapshot(); reportSnapshot = null;
+        hasPosition = false; PositionLocked = false;
+        draftServer = null; title.text = ""; description.text = "";
+        message.text = "已保存到本地，待上传。";
+        RefreshControls(); ShowHome();
     }
 
     private void RefreshControls()
     {
-        bool pending = requestKey != null && !saved;
         address.interactable = !busy;
-        title.interactable = description.interactable = priority.interactable = positionLocked && !busy && !saved && !pending;
-        submit.interactable = positionLocked && !busy && !saved;
+        title.interactable = description.interactable = priority.interactable = positionLocked && !busy;
+        submit.interactable = positionLocked && !busy;
         test.interactable = !busy;
         historyButton.interactable = !busy;
-        edit.interactable = !busy && !pending && (saved || draftServer == activeServer);
-        editLabel.text = saved ? "继续上报" : pending ? "等待重试" : "调整位置";
+        edit.interactable = !busy && draftServer == activeServer;
+        editLabel.text = "调整位置";
     }
 
     private void Start() { ShowHome(); }
@@ -305,6 +257,7 @@ public sealed class IssueReportForm : MonoBehaviour
 
     public void ShowHome()
     {
+        local?.Hide();
         probe.LeaveCamera();
         // Keep the confirmed photo with the in-memory draft when returning home.
         reportPanel.SetActive(false); captureControls.SetActive(false); previewPanel.SetActive(false);
@@ -316,12 +269,6 @@ public sealed class IssueReportForm : MonoBehaviour
     {
         if (history.Busy) return;
         history.Hide(); homeControls.SetActive(false);
-        if (requestKey != null && !saved && requestAddress != activeServer)
-        {
-            reportPanel.SetActive(true);
-            message.text = "待确认上报属于 " + requestAddress + "，重试仍发送至原服务；完成后可新增当前服务记录。";
-            return;
-        }
         if (draftServer != null && draftServer != activeServer)
         {
             reportPanel.SetActive(true); message.text = "当前草稿属于 " + draftServer + "，提交将发送至该服务。可返回设置切回原服务继续采集。";

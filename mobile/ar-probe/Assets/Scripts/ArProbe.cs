@@ -318,6 +318,24 @@ public sealed class ArProbe : MonoBehaviour
     public Vector3 CurrentPosition => markerAnchor != null ? markerAnchor.transform.position : lastPosition;
     public bool HasTrackedDraft => markerAnchor != null && markerAnchor.trackingState == TrackingState.Tracking;
 
+    public void KeepQueuedMarker(string server, string key)
+    {
+        KeepSubmittedMarker(server, "local-" + key);
+        if (savedMarkers.TryGetValue(server + "/local-" + key, out var anchor) && anchor != null)
+            SetMarkerColor(anchor.GetComponentInChildren<Renderer>(), Color.yellow);
+    }
+
+    public void AcknowledgeQueuedMarker(string server, string key, string id)
+    {
+        var localKey = server + "/local-" + key;
+        if (!savedMarkers.TryGetValue(localKey, out var anchor)) return;
+        savedMarkers.Remove(localKey); markerStatuses.Remove(localKey);
+        var remoteKey = server + "/" + id;
+        if (savedMarkers.ContainsKey(remoteKey)) { if (anchor != null) Destroy(anchor.gameObject); return; }
+        savedMarkers[remoteKey] = anchor;
+        UpdateMarkerStatus(server, id, markerStatuses.TryGetValue(remoteKey, out var status) ? status : "open");
+    }
+
     public void KeepSubmittedMarker(string server, string id, bool replaceExisting = false)
     {
         var key = server + "/" + id;
