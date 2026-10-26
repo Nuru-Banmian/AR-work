@@ -4,13 +4,14 @@ using UnityEngine;
 using UnityEngine.Networking;
 using UnityEngine.UI;
 
-// Each row owns its request and small display texture; leaving the list releases both.
+// Each row owns its request and small texture. Hiding cancels I/O; destruction frees pixels.
 public sealed class IssueListPhoto : MonoBehaviour
 {
     private RawImage image;
     private Text feedback;
     private Texture2D texture;
     private UnityWebRequest request;
+    private string source;
 
     public void Initialize(Button row, string address, string encodedPhoto = null)
     {
@@ -35,7 +36,14 @@ public sealed class IssueListPhoto : MonoBehaviour
                 Display(decoded);
             } catch (ArgumentException) { feedback.text = "图片失败"; }
             finally { Destroy(decoded); }
-        } else if (address != null) StartCoroutine(Download(address));
+        } else { source = address; ResumeDownload(); }
+    }
+
+    private void OnEnable() { ResumeDownload(); }
+
+    private void ResumeDownload()
+    {
+        if (isActiveAndEnabled && source != null && texture == null && request == null) StartCoroutine(Download(source));
     }
 
     private IEnumerator Download(string address)
@@ -73,6 +81,10 @@ public sealed class IssueListPhoto : MonoBehaviour
     private void OnDisable()
     {
         StopAllCoroutines(); request?.Abort(); request?.Dispose(); request = null;
+    }
+
+    private void OnDestroy()
+    {
         if (image != null) image.texture = null;
         if (texture != null) Destroy(texture); texture = null;
     }
