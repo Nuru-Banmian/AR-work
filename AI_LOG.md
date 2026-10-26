@@ -1,8 +1,8 @@
 # AI 使用记录
 
-范围：本次 AR-work 初始化与工程技能配置对话，按发送顺序记录用户向当前 AI 助手发送的指令。技能正文作为单独一条保留；环境、界面上下文、系统指令、工具输出和 IDE 自动补全不作为主动 Prompt。
+范围：AR-work 初始化、工程技能配置及后续需求讨论，按发送顺序记录用户向当前 AI 助手发送的指令；从 P-009 起也记录助手实际发送给子代理的指令，并在目标中注明发送方。技能正文作为单独一条保留；环境、界面上下文、系统指令、工具输出和 IDE 自动补全不作为主动 Prompt。
 
-归属说明：本次助手未向其他 AI 或子代理发送问题或指令。因此，不存在可记录的“助手向另一个 AI 发出的 Prompt”。以下是用户到助手的真实对话记录，不能据此声称用户进行了未发生的独立审核，也不包含不可见历史。
+归属说明：P-001 至 P-006 对应的初始化阶段未调用其他 AI 或子代理。后续阶段的实际委派另行记录。日志不能用于声称用户进行了未发生的独立审核，也不包含不可见历史。
 
 脱敏：本地用户路径已用占位内容替换；未复制登录检查输出、账号名称或凭据。
 
@@ -239,3 +239,260 @@
 检查与调整：采用 Windows 适用的 --body-file 方式替换种子模板中的 heredoc 建议；按单上下文选择精简领域文档；将用户输入 agent.md 解释为标准 AGENTS.md，并检查入口的三个文件引用。验证仅针对配置文件和仓库状态，未运行业务测试。
 
 本次日志提交只包含 AI_LOG.md；此前生成的工程配置仍留在工作区，未包含在该提交内。未执行推送。
+
+## P-007
+
+- 目标：用户请求：提供三端原型需求，并先检查手机 AR 兼容性
+
+### Prompt 原文
+
+> [$ask-matt]([REDACTED: local user path]/ask-matt/SKILL.md) 以下是我这次项目的大致需求
+>
+> ## 1. 项目背景
+>
+> 园区巡检人员发现墙面破损、设备异常或安全隐患时，希望用手机在现场放置一个 AR 标记并上报问题。管理人员随后在电脑网页中查看这些问题并更新处理状态。
+>
+> 请完成一个小型原型，打通以下流程：
+> ```Plaintext
+> Unity AR 放置标记并上报
+>   → Go 后端保存
+>   → React 页面查看问题
+>   → React 修改处理状态
+> ```
+>
+> ## 2. 固定技术栈
+>
+> | 部分  | 技术要求                       | 作用             |
+> | --- | -------------------------- | -------------- |
+> | 移动端 | Unity LTS、C#、AR Foundation | 检测平面、放置标记、上报问题 |
+> | 管理端 | React、TypeScript           | 查看问题、修改状态      |
+> | 后端  | Go                         | 提供 API 并持久化数据  |
+>
+> - Unity 可选择 Android + ARCore 或 iOS + ARKit；
+> - Go 框架不限；
+> - 数据可保存到 SQLite 或本地 JSON 文件；
+> - 可以使用 AI 辅助开发，但不要求产品本身接入大模型。
+>
+> ## 3. 必做功能
+>
+> ### 3.1 Unity AR 移动端
+>
+> 1. 在支持 AR 的真机上运行；
+> 2. 检测真实环境中的水平平面；
+> 3. 点击检测到的平面，在命中位置放置一个简单标记；
+> 4. 填写并提交问题：
+>    1. 标题：必填；
+>    2. 描述：可选；
+>    3. 优先级：`low`、`medium`、`high`；
+>    4. 位置：标记的 `x/y/z` 坐标；
+> 5. 提交成功或失败时，给用户明确提示；
+> 6. 点击按钮或输入框时，不应误在 AR 场景中放置标记。
+>
+> 标记可以直接使用立方体、球体等 Unity 基础对象，不考察美术效果。
+>
+> ### 3.2 React 管理端
+>
+> 1. 从 Go 后端获取问题列表；
+> 2. 至少显示标题、优先级和状态；
+> 3. 能将状态修改为：
+>    1. `open`；
+>    2. `in_progress`；
+>    3. `resolved`；
+> 4. 后端不可用时，页面应显示错误提示，不能直接白屏。
+>
+> ### 3.3 Go 后端
+>
+> Go 后端需要为 Unity 和 React 提供以下能力：
+>
+> 1. 提供简单的服务运行状态检查；
+> 2. 接收并保存 Unity 上报的问题；
+> 3. 返回已经保存的问题列表；
+> 4. 根据问题 ID 修改处理状态；
+> 5. 为新问题生成唯一 ID，默认状态为 `open`；
+> 6. 标题为空或枚举值错误时，返回明确的参数错误；
+> 7. 数据在 Go 服务重启后仍然存在；
+> 8. Unity 和 React 使用同一个 Go 后端和同一份数据；
+> 9. React 在浏览器中能够正常访问后端。
+>
+> 接口路径和响应格式可以自行设计，请在 README 中简要说明。
+>
+> ## 4. 基础数据结构
+>
+> 三端字段名称应保持一致：
+> ```JSON
+> {
+>   "id": "由后端生成",
+>   "title": "入口墙面破损",
+>   "description": "左侧墙体存在裂缝",
+>   "priority": "high",
+>   "status": "open",
+>   "position": {
+>     "x": 0.42,
+>     "y": 0.03,
+>     "z": 1.26
+>   },
+>   "createdAt": "由后端生成",
+>   "updatedAt": "由后端生成"
+> }
+> ```
+>
+> 不要求应用重启后，把历史标记恢复到完全相同的真实物理位置。
+>
+> 目前我不确认我的手机是否支持ar，请你指导我检查
+
+### 结果
+
+- 采用
+- 本轮先处理用户明确提出的手机兼容性检查；读取 ask-matt 和仓库配置，向用户索取型号及系统版本，查阅 Google 官方 ARCore 设备名单和运行时检查文档。三端原型尚未实现，真机尚未验收。
+
+## P-008
+
+- 目标：用户提供 ask-matt 路由技能全文
+
+### Prompt 原文
+
+> <skill>
+> <name>ask-matt</name>
+> <path>[REDACTED: local user path]/ask-matt/SKILL.md</path>
+> ---
+> name: ask-matt
+> description: Ask which skill or flow fits your situation. A router over the skills in this repo.
+> disable-model-invocation: true
+> ---
+>
+> # Ask Matt
+>
+> You don't remember every skill, so ask.
+>
+> A **flow** is a path through the skills. Most paths run along one **main flow**, and two **on-ramps** merge onto it. Everything else is standalone, or a vocabulary layer that runs underneath.
+>
+> ## The main flow: idea → ship
+>
+> The route most work travels. You have an idea and want it built.
+>
+> 1. **`/grill-with-docs`** sharpens the idea by interview. Start here whenever you are **working in a working directory**: it's stateful, retaining what it learns in `CONTEXT.md` and ADRs. (No working directory? Use `/grill-me` instead, covered under Standalone. Both run the same `/grilling` primitive; `grill-with-docs` is the one that leaves a paper trail, which makes it the better of the two whenever a repo is there to leave it in.)
+> 2. **Branch: can you settle every question in conversation?** If a question needs a runnable answer (state, business logic, a UI you have to see), detour through a prototype, bridged by **`/handoff`** in both directions (a prototype lives in its own directory, which is exactly what `/handoff` is for; see Phase boundaries):
+>    - **`/handoff`** out, then open a fresh session against that file,
+>    - **`/prototype`** to answer the question with throwaway code,
+>    - **`/handoff`** back what you learned, and reference it from the original idea thread.
+> 3. **Branch: is this a multi-session build?**
+>    - **Yes** → **`/to-spec`** (turn the thread into a spec), then **`/to-tickets`** to split it into tracer-bullet tickets, each declaring its **blocking edges**. On a local tracker that's one file per ticket under `.scratch/<feature>/issues/`, worked blockers-first by hand; on a real tracker the edges become native blocking links, so any ticket whose blockers are done can be grabbed: kick off **`/implement`** per ticket, **`/clear`ing context between each one**. Each ticket is self-contained, so the last one's context is disposable.
+>    - **No** → **`/implement`** right here, in the same context window.
+>
+>    Either way, **`/implement`** builds each issue by driving **`/tdd`** internally (one red-green slice at a time), then closes out by running **`/code-review`**, a two-axis review (Standards + Spec) of the diff, before committing. Reach for **`/tdd`** on its own when you just want to build a concrete behaviour test-first without a full spec, and **`/code-review`** on its own whenever you want to review a branch or PR against a fixed point.
+>
+> ### Context hygiene
+>
+> Keep steps 1–3 in **one unbroken context window** (don't compact or clear until after `/to-tickets`) so the grilling, spec, and tickets all build on the same thinking. Each `/implement` then starts fresh, working from the ticket.
+>
+> The limit on this is the **[smart zone](https://www.aihero.dev/ai-coding-dictionary/smart-zone)**: the window (~150k tokens on state-of-the-art models) within which the model still reasons sharply. If a session approaches it before `/to-tickets`, don't push on degraded; `/compact` at the nearest phase boundary and carry on (see Phase boundaries).
+>
+> ## On-ramps
+>
+> A starting situation that generates work, then merges onto the main flow.
+>
+> - **Bugs and requests piling up** → **`/triage`**. It moves issues through triage roles and produces agent-ready issues, which **`/implement`** later picks up.
+>
+>   Triage is only for issues **you didn't create**: bug reports, incoming feature requests, anything that arrives raw. Tickets that `/to-tickets` produced are already agent-ready, so **don't triage them**.
+>
+> - **Something's broken** → **`/diagnosing-bugs`**. For the hard ones: the bug that resists a first glance, the intermittent flake, the regression that crept in between two known-good states. It refuses to theorise until it has a **tight feedback loop** (one command that already goes red on *this* bug), then fixes with a regression test. Its post-mortem hands off to **`/improve-codebase-architecture`** when the real finding is that there's no good seam to lock the bug down.
+>
+> - **A huge, foggy effort: a greenfield project or a huge feature build, too big for one session** → **`/wayfinder`**, the most cognitively demanding flow here. When the way from here to the destination isn't visible yet, it charts a **shared map** of **decision tickets** on the issue tracker and resolves them one at a time, producing **decisions, not deliverables**, until the fog is pushed back and the way is clear. Where **`/grill-with-docs`** sharpens an idea you can hold in one session, wayfinder is for the idea you can't, and it's slower and denser, so save it for exactly that, never a well-scoped feature.
+>
+>   When the map clears, **it hands off, it doesn't build**: merge onto the main flow at **`/to-spec`**, which collapses the map's linked decisions into a buildable plan, then `/to-tickets` and `/implement` as usual. Looping the map straight into `/implement` skips that collapse and throws the linked detail away, so go straight to `/implement` only when the effort turned out genuinely small.
+>
+> ## Codebase health
+>
+> Not feature work, just upkeep.
+>
+> - **`/improve-codebase-architecture`** runs whenever you have a spare moment to keep the codebase good for agents to operate in. It surfaces **deepening opportunities**; picking one _generates an idea_ you can take into the main flow at `/grill-with-docs`. It's the survey that finds the candidates; **`/codebase-design`** (below) is the bench you design the chosen one on.
+>
+> ## Vocabulary underneath
+>
+> Two model-invoked references that run *beneath* the other skills, each the single source of truth for its vocabulary. Reach for them directly when the **words**, not the process, are the problem; or let the skills above pull them in.
+>
+> - **`/domain-modeling`**: sharpen the project's *domain* language: challenge a fuzzy term, resolve an overloaded word ("account" doing three jobs), record a hard-to-reverse decision as an ADR. It's the active discipline `/grill-with-docs` drives to keep `CONTEXT.md` a clean glossary.
+> - **`/codebase-design`** is the deep-module vocabulary (module, interface, depth, seam, adapter, leverage, locality) for designing a module's *shape*: a lot of behaviour behind a small interface at a clean seam. `/tdd` and `/improve-codebase-architecture` both speak it.
+>
+> ## Phase boundaries
+>
+> A **phase** is a chunk of work inside a session: the grilling, the implementation, the QA. At the **boundary** between two of them you have five options, and picking between them is the fuzziest decision in this whole map:
+>
+> - **Continue**: stay put. Costs nothing, loses nothing.
+> - **`/clear`**: empty the window, when nothing here matters to what's next.
+> - **`/handoff`** writes a portable markdown file. Narrow: only for a **new harness**, a **new directory**, a **colleague**, or forking a side task **mid-phase**. What it buys is portability.
+> - **Subagent**: send a tightly-scoped task to its own window and get a report back.
+> - **`/compact`** compresses this context and seeds a fresh session with it. The **default**, at the bottom of the tree rather than the first reach.
+>
+> Read [PHASE-BOUNDARIES.md](PHASE-BOUNDARIES.md) for the ordered tree: the five questions, the reasoning behind each branch, and why the primary-source cost makes **Continue** the one to rule out first. Make the decision **at** a boundary; mid-phase, continue or split the rest into subagents.
+>
+> ## Standalone
+>
+> Off the main flow entirely.
+>
+> - **`/grill-me`**: the same relentless interview as `/grill-with-docs`, but **stateless**: it saves nothing locally and builds no `CONTEXT.md`. Reach for it when you are **not working in a working directory** (sharpening a plan, a design, a piece of writing, anything with no repo under it). If you are in a working directory, use `/grill-with-docs` instead: it runs the same interview and leaves a paper trail, so it is strictly the better one.
+> - **`/grilling`** is the interview primitive itself: rounds, the frontier, facts are the agent's job and decisions are yours. `/grill-me` and `/grill-with-docs` are the two named ways in, and `/triage`, `/wayfinder` and `/improve-codebase-architecture` all run it internally. Reach for it directly only when you want the interview with no wrapper around it.
+> - **`/resolving-merge-conflicts`** works an in-progress merge or rebase conflict hunk by hunk, resolving by **intent** traced to each side's primary source rather than by picking lines, then finishes the operation. It never runs `--abort`. Standalone and off every flow: reach for it when you are already mid-conflict.
+> - **`/prototype`** is a small, throwaway program that answers one design question: does this state model feel right, or what should this UI look like. Throwaway is a constraint on how the code is written, not a promise to destroy it: the answer folds into the real code, and the prototype itself is kept as a **primary source** on a `prototype/<name>` branch out of main, pointed at from the implementation issue. It's the detour in step 2 of the main flow, but reach for it any time a design question is hard to settle on paper.
+> - **`/research`**: delegate reading legwork to a **background agent**: it investigates a question against **primary sources**, then leaves a cited Markdown file in the repo. Keep working while it reads. The file it produces is something to take *into* the main flow at `/grill-with-docs`, since research feeds the thinking rather than replacing it.
+> - **`/to-questionnaire`** comes in when the thing blocking you isn't in your head or the codebase but in **someone else's**, and it writes them a questionnaire to fill in. It's the inverse of `/grill-me`: instead of interviewing you about the subject, it interviews you about the **send** (who it's going to, what you need back) and aims the questions at the gap. What comes back is material for `/grill-with-docs` or `/to-spec`.
+> - **`/wizard`** is for the steps only a **human** can take: provisioning infrastructure, setting up credentials or CI secrets, clicking through an unfamiliar third-party dashboard, running a one-off migration or cutover. It generates an interactive bash script that opens each URL, captures each value, and writes it into `.env` and GitHub secrets, so the procedure stops being something you re-explain to an agent every time. Model-invoked, so the agent reaches for it the moment it hits a wall only you can pass. If the agent could just do it itself, it should; this is for where a human is genuinely in the loop.
+> - **`/wait-what`** is the corrective for a message that didn't land. Use it mid-conversation, inside any other skill, and the agent re-pitches what it just said with the context you were missing, in plain English, using the `CONTEXT.md` vocabulary. It works after the fact; `/grill-with-docs` is the upfront cure, because a shared language agreed early is what stops the jargon arriving at all.
+> - **`/teach`**: learn a concept over multiple sessions, using the current directory as a stateful workspace.
+> - **`/writing-for-agents`** is the reference for writing documents agents consume: skills, AGENTS.md, pointed-at docs.
+>
+> ## Precondition
+>
+> **`/setup-matt-pocock-skills`**: run before your first engineering flow to configure the issue tracker, triage labels, and doc layout the other skills assume. Custom issue trackers also work.
+> </skill>
+
+### 结果
+
+- 采用
+- 结合已有工作目录，将后续需求澄清对应到 grill-with-docs，再视构建规模进入 to-spec、to-tickets 和 implement。本轮先解决设备可行性，尚未执行这些后续流程。
+
+## P-009
+
+- 目标：助手向子代理委派 Android 官方兼容性核查
+
+### Prompt 原文
+
+> 请只读核查 Android 手机是否支持本项目所需 ARCore 的官方检查流程。项目用 Unity AR Foundation 做水平平面检测、点选平面放置标记；用户尚未提供手机型号。使用 Google 官方来源，说明如何核对准确型号和系统版本、Google Play Services for AR 的作用、中国大陆设备差异、为什么安装成功不足以证明平面检测正常。返回简短中文建议和直接来源链接。不要修改文件，不要再派生子代理，不要发起用户提问。
+
+### 结果
+
+- 采用
+- 子代理查阅 Google 官方资料；主代理独立打开同一设备页核对 Google Play 与 China 两个区域条目，并核对官方运行时支持检查要求。
+
+## P-010
+
+- 目标：用户补充手机型号
+
+### Prompt 原文
+
+> 我的手机是小米13pro
+
+### 结果
+
+- 采用
+- 将核查对象限定为 Xiaomi 13 Pro；官方 Google Play 区域名单列出该型号，但 China 区域没有单独列出，故保留地区系统及真机运行验证项。
+
+## P-011
+
+- 目标：助手向子代理追加准确型号与核查重点
+
+### Prompt 原文
+
+> 用户补充：手机是小米13pro。请重点核对 Xiaomi 13 Pro 在官方 ARCore 列表中的条目、最低系统和中国大陆机型/安装渠道说明。系统版本及地区版本仍未知。
+
+### 结果
+
+- 采用
+- 对照官方列表确认 Xiaomi 13 Pro 在 Google Play 区域的记录及中国区缺项；没有把 Google Play 版本支持推断为国行当前系统必定可用，也没有把安装 AR 服务视为平面检测验收。
+
+本轮核查来源：
+
+- [Google ARCore 支持设备](https://developers.google.com/ar/devices)：区分 Google Play 与 China 区域。
+- [Enable AR in your Android app](https://developers.google.com/ar/develop/java/enable-arcore)：支持检测、服务安装更新与相机权限要求。
+
+截至本轮日志更新，尚未获得用户手机的 Android/HyperOS 版本和 AR 服务状态，未运行真机平面检测。
