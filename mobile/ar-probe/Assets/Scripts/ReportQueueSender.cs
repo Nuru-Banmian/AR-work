@@ -27,6 +27,7 @@ public sealed class ReportQueueSender
             lastAttempt = entry.key;
             entry = queue.BeginSend(entry.key); // durable before any network I/O
             try {
+                queue.Stage(entry.key, "正在核对接收端身份");
                 var receiver = await ReceiverDiscovery.Verify(client, server, string.IsNullOrEmpty(entry.receiverId) ? queue.ReceiverAt(server) : entry.receiverId);
                 entry = queue.BindReceiver(entry.key, server, receiver.id);
                 queue.RememberLegacyReceiver(server, receiver.id);
@@ -34,6 +35,7 @@ public sealed class ReportQueueSender
                     request.Headers.Add("X-ARWork-Receiver", receiver.id);
                     request.Headers.Add("Idempotency-Key", entry.key);
                     request.Content = new StringContent(entry.body, Encoding.UTF8, "application/json");
+                    queue.Stage(entry.key, "正在传送完整资料 / 等待接收端持久保存回执");
                     using (var response = await client.SendAsync(request)) {
                         response.EnsureSuccessStatusCode();
                         var receipt = await response.Content.ReadAsStringAsync();
@@ -41,6 +43,9 @@ public sealed class ReportQueueSender
                         if (issue == null || string.IsNullOrEmpty(issue.id) || issue.position == null ||
                             (entry.endpoint == "/api/reports" && string.IsNullOrEmpty(issue.snapshotUrl)))
                             throw new InvalidOperationException("服务器回执不完整，保留原请求重试");
+                        var payload = JsonUtility.FromJson<ReportPayload>(entry.body);
+                        if (payload.reportVersion == 2 && string.IsNullOrEmpty(issue.modelUrl))
+                            throw new InvalidOperationException("服务器模型回执不完整，保留原请求重试");
                         queue.Complete(entry.key, issue.id, receipt);
                     }
                 }

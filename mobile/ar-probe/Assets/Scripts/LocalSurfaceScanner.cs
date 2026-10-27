@@ -327,6 +327,13 @@ public sealed class LocalSurfaceScanner : MonoBehaviour
             frame.Rgb=bytes; frame.ColorWidth=width; frame.ColorHeight=height;
         }
     }
+    public IssueScanModel FreezeIssue(Vector3 point, Vector3 normal)
+    {
+        if (scanning || fusionTask != null || anchor == null || anchor.trackingState != TrackingState.Tracking)
+            throw new InvalidOperationException("请暂停扫描并等待表面完成后重新选点。");
+        return IssueScanModel.Freeze(geometry, surface.transform.worldToLocalMatrix, point, normal);
+    }
+
     public bool Raycast(Vector2 position, out Pose pose)
     {
         pose = default;

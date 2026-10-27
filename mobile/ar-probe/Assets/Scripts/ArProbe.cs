@@ -23,6 +23,7 @@ public sealed class ArProbe : MonoBehaviour
     private bool cameraFrameSeen;
     private double latestCameraTimestamp;
     private LocalSurfaceScanner surfaceScanner;
+    private IssueScanModel selectedIssueModel;
     private Transform safeUi;
     private GameObject originRoot, cameraHud;
     private Coroutine starting;
@@ -299,6 +300,8 @@ public sealed class ArProbe : MonoBehaviour
         var newAnchor = root.AddComponent<ARAnchor>();
         if (newAnchor.trackableId == TrackableId.invalidId || newAnchor.trackingState != TrackingState.Tracking)
         { Destroy(root); notice.text = "未能固定标记，请恢复跟踪后重试。"; return; }
+        try { selectedIssueModel = surfaceScanner.FreezeIssue(pose.position, pose.rotation * Vector3.up); }
+        catch (System.Exception error) { Destroy(root); notice.text = error.Message; return; }
         PlaceMarkerAt(newAnchor, pose.position, source);
     }
 
@@ -338,6 +341,10 @@ public sealed class ArProbe : MonoBehaviour
         if (pointedMarkerMesh != null) Destroy(pointedMarkerMesh);
     }
 
+    public IssueScanModel FreezeIssueModel() {
+        if (selectedIssueModel == null || !HasTrackedDraft) throw new System.InvalidOperationException("请在当前扫描表面重新选点。");
+        return JsonUtility.FromJson<IssueScanModel>(JsonUtility.ToJson(selectedIssueModel));
+    }
     public Vector3 CurrentPosition => markerAnchor != null ? markerAnchor.transform.position : lastPosition;
     public bool HasTrackedDraft => markerAnchor != null && markerAnchor.trackingState == TrackingState.Tracking;
 

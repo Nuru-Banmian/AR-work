@@ -65,6 +65,17 @@ public static class ReceiverQueueChecks
             await inflight;
             Check(queue.ReceiverAt(moved.Address) == A && queue.ReceiverAt(first.Address) == null && queue.List(moved.Address).Length == 1,
                 "in-flight old-address handshake cannot roll rediscovered route back");
+            var modelBody = "{\"reportVersion\":2,\"model\":{\"version\":1},\"snapshot\":\"frozen photo\"}";
+            queue = new ReportQueue(Path.Combine(root, "model-http")); queue.RememberReceiver(moved.Address, A);
+            queue.Add(moved.Address, "/api/reports", modelBody, "model-http", true);
+            moved.LegacyService = false;
+            await new ReportQueueSender(queue).UploadNext(moved.Address, client);
+            Check(queue.Get("model-http").state == "failed", "snapshot-only receipt cannot acknowledge model request");
+            moved.IncludeModel = true;
+            queue = new ReportQueue(Path.Combine(root, "model-http"));
+            await new ReportQueueSender(queue).UploadNext(moved.Address, client);
+            Check(queue.Get("model-http").state == "synced" && moved.Body == modelBody && moved.Key == "model-http", "restart retries model HTTP bytes and completes only full receipt");
+
         }
     }
     private sealed class Fixture : IDisposable
@@ -72,7 +83,7 @@ public static class ReceiverQueueChecks
         private readonly HttpListener listener = new HttpListener();
         public readonly string Address;
         public volatile string Identity;
-        public volatile bool Fail, LegacyService;
+        public volatile bool Fail, LegacyService, IncludeModel;
         public volatile int Posts;
         public string Body, Key, Target;
         public TaskCompletionSource<bool> HandshakeStarted, ReleaseHandshake;
@@ -90,6 +101,7 @@ public static class ReceiverQueueChecks
                             Posts++; Body = new StreamReader(request.InputStream).ReadToEnd(); Key = request.Headers["Idempotency-Key"]; Target = request.Headers["X-ARWork-Receiver"];
                             context.Response.StatusCode = Fail ? 500 : 201;
                             response = "{\"data\":{\"id\":\"saved\",\"position\":{\"x\":0,\"y\":0,\"z\":0},\"snapshotUrl\":\"/snapshot\"}}";
+                            if (IncludeModel) response = response.Replace("\"snapshotUrl\"", "\"modelUrl\":\"/model\",\"snapshotUrl\"");
                         } else response = LegacyService ? "{\"data\":{\"status\":\"ok\"}}" : "{\"data\":{\"id\":\"" + Identity + "\",\"name\":\"fixture\",\"protocol\":1,\"port\":" + port + "}}";
                         if (request.Url.AbsolutePath == "/api/receiver" && ReleaseHandshake != null) {
                             HandshakeStarted.SetResult(true); await ReleaseHandshake.Task; ReleaseHandshake = null;

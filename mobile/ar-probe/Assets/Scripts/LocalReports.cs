@@ -108,7 +108,7 @@ public sealed class LocalReports : MonoBehaviour
     }
 
     public static string State(ReportQueue.Entry entry) => entry.state == "pending" ? "待上传" :
-        entry.state == "synced" ? "已同步" : entry.state == "uploading" ? "上传中 / 中断后将重试" : "上传失败";
+        entry.state == "synced" ? "已同步" : entry.state == "uploading" ? (entry.stage ?? "上传中 / 中断后将重试") : "上传失败";
 
     private static string SyncTime(ReportQueue.Entry entry) => entry.state != "synced" ? "尚未同步" :
         string.IsNullOrEmpty(entry.syncedAt) ? "未知（旧回执）" : InspectionUi.Time(entry.syncedAt);

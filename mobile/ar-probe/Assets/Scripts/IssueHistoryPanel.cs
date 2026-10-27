@@ -11,7 +11,7 @@ public sealed class IssueHistoryPanel : MonoBehaviour
 {
     [Serializable] public sealed class Position { public float x, y, z; }
     [Serializable] public sealed class Issue {
-        public string id, title, description, priority, status, createdAt, updatedAt, snapshotUrl;
+        public string id, title, description, priority, status, createdAt, updatedAt, snapshotUrl, modelUrl;
         public Position position;
     }
     [Serializable] private sealed class IssueResult { public Issue data; }

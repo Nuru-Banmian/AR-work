@@ -26,6 +26,7 @@ type Position struct {
 }
 
 type Issue struct {
+	ModelURL    string    `json:"modelUrl,omitempty"`
 	SnapshotURL string    `json:"snapshotUrl,omitempty"`
 	ID          string    `json:"id"`
 	Title       string    `json:"title"`
@@ -40,6 +41,7 @@ type Issue struct {
 type api struct {
 	mu          sync.Mutex
 	path        string
+	models      map[string]json.RawMessage
 	media       map[string][]byte
 	issues      []Issue
 	origins     map[string]bool
@@ -54,13 +56,14 @@ type creation struct {
 }
 
 type snapshot struct {
-	Media    map[string][]byte   `json:"media,omitempty"`
-	Issues   []Issue             `json:"issues"`
-	Requests map[string]creation `json:"requests"`
+	Models   map[string]json.RawMessage `json:"models,omitempty"`
+	Media    map[string][]byte          `json:"media,omitempty"`
+	Issues   []Issue                    `json:"issues"`
+	Requests map[string]creation        `json:"requests"`
 }
 
 func newAPI(path, allowedOrigins string) (http.Handler, error) {
-	a := &api{media: map[string][]byte{}, path: path, issues: []Issue{}, origins: map[string]bool{}, requests: map[string]creation{}, subscribers: map[chan struct{}]bool{}}
+	a := &api{models: map[string]json.RawMessage{}, media: map[string][]byte{}, path: path, issues: []Issue{}, origins: map[string]bool{}, requests: map[string]creation{}, subscribers: map[chan struct{}]bool{}}
 	for _, origin := range strings.Split(allowedOrigins, ",") {
 		a.origins[strings.TrimSpace(origin)] = true
 	}
@@ -73,6 +76,9 @@ func newAPI(path, allowedOrigins string) (http.Handler, error) {
 			var stored snapshot
 			err = json.Unmarshal(data, &stored)
 			a.issues = stored.Issues
+			if stored.Models != nil {
+				a.models = stored.Models
+			}
 			if stored.Media != nil {
 				a.media = stored.Media
 			}
@@ -161,6 +167,10 @@ func (a *api) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *api) issue(w http.ResponseWriter, r *http.Request) {
+	if strings.HasSuffix(r.URL.Path, "/model") {
+		a.readModel(w, r)
+		return
+	}
 	if strings.HasSuffix(r.URL.Path, "/snapshot") {
 		a.readSnapshot(w, r)
 		return
@@ -291,7 +301,7 @@ func (a *api) issue(w http.ResponseWriter, r *http.Request) {
 			issue.UpdatedAt = time.Now().UTC()
 			next := append([]Issue{}, a.issues...)
 			next[index] = issue
-			if err := saveIssues(a.path, snapshot{Issues: next, Requests: a.requests, Media: media}); err != nil {
+			if err := saveIssues(a.path, snapshot{Issues: next, Requests: a.requests, Media: media, Models: a.models}); err != nil {
 				log.Printf("save issue: %v", err)
 				fail(w, 500, "storage_error", "Could not save issue; data was not changed")
 				return
@@ -308,13 +318,15 @@ func (a *api) issue(w http.ResponseWriter, r *http.Request) {
 
 func (a *api) create(w http.ResponseWriter, r *http.Request) {
 	var input struct {
-		Snapshot    string                      `json:"snapshot"`
-		Title       string                      `json:"title"`
-		Description string                      `json:"description"`
-		Priority    string                      `json:"priority"`
-		Position    *struct{ X, Y, Z *float64 } `json:"position"`
+		ReportVersion int                         `json:"reportVersion"`
+		Model         *ScanModel                  `json:"model"`
+		Snapshot      string                      `json:"snapshot"`
+		Title         string                      `json:"title"`
+		Description   string                      `json:"description"`
+		Priority      string                      `json:"priority"`
+		Position      *struct{ X, Y, Z *float64 } `json:"position"`
 	}
-	body, readErr := io.ReadAll(http.MaxBytesReader(w, r.Body, 12*1024*1024))
+	body, readErr := io.ReadAll(http.MaxBytesReader(w, r.Body, 32*1024*1024))
 	if readErr != nil {
 		fail(w, 400, "invalid_argument", "Request body is too large")
 		return
@@ -352,9 +364,13 @@ func (a *api) create(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	photo, err := validateSnapshot(input.Snapshot, r.URL.Path == "/api/reports")
+	photo, err := validateSnapshot(input.Snapshot, r.URL.Path == "/api/reports" || input.ReportVersion == 2)
 	if err != nil {
 		fail(w, 400, "invalid_snapshot", err.Error())
+		return
+	}
+	if err := validateModel(input.Model, input.ReportVersion); err != nil {
+		fail(w, 400, "invalid_model", err.Error())
 		return
 	}
 	id := make([]byte, 16)
@@ -368,6 +384,9 @@ func (a *api) create(w http.ResponseWriter, r *http.Request) {
 	if len(photo) > 0 {
 		issue.SnapshotURL = "/api/issues/" + issue.ID + "/snapshot"
 	}
+	if input.Model != nil {
+		issue.ModelURL = "/api/issues/" + issue.ID + "/model"
+	}
 	// Signed zero is the same location and must not produce a different replay fingerprint.
 	for _, coordinate := range []*float64{&issue.Position.X, &issue.Position.Y, &issue.Position.Z} {
 		if *coordinate == 0 {
@@ -379,8 +398,9 @@ func (a *api) create(w http.ResponseWriter, r *http.Request) {
 		Description string
 		Priority    string
 		Position    Position
-		Snapshot    string `json:",omitempty"`
-	}{issue.Title, issue.Description, issue.Priority, issue.Position, input.Snapshot})
+		Snapshot    string     `json:",omitempty"`
+		Model       *ScanModel `json:",omitempty"`
+	}{issue.Title, issue.Description, issue.Priority, issue.Position, input.Snapshot, input.Model})
 	digest := sha256.Sum256(canonical)
 	fingerprint := hex.EncodeToString(digest[:])
 	key := r.Header.Get("Idempotency-Key")
@@ -406,11 +426,15 @@ func (a *api) create(w http.ResponseWriter, r *http.Request) {
 	if key != "" {
 		nextRequests[key] = creation{fingerprint, issue}
 	}
+	nextModels := cloneModels(a.models)
+	if input.Model != nil {
+		nextModels[issue.ID], _ = json.Marshal(input.Model)
+	}
 	nextMedia := cloneMedia(a.media)
 	if len(photo) > 0 {
 		nextMedia[issue.ID] = photo
 	}
-	if err := saveIssues(a.path, snapshot{Issues: next, Requests: nextRequests, Media: nextMedia}); err != nil {
+	if err := saveIssues(a.path, snapshot{Issues: next, Requests: nextRequests, Media: nextMedia, Models: nextModels}); err != nil {
 		log.Printf("save issues: %v", err)
 		fail(w, 500, "storage_error", "Could not save issue; data was not changed")
 		return
@@ -418,6 +442,7 @@ func (a *api) create(w http.ResponseWriter, r *http.Request) {
 	a.issues = next
 	a.requests = nextRequests
 	a.media = nextMedia
+	a.models = nextModels
 	a.notifySaved()
 	respond(w, 201, map[string]any{"data": issue})
 }

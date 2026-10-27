@@ -5,6 +5,8 @@ using UnityEngine;
 
 [Serializable] public sealed class ReportPayload
 {
+    public int reportVersion;
+    public IssueScanModel model;
     public string title, description, priority, snapshot;
     public IssueHistoryPanel.Position position;
 }
@@ -17,7 +19,7 @@ public sealed class ReportQueue
     {
         public int version = 1;
         public string key, server, endpoint, body, state = "pending", serverId, error, receipt;
-        public string syncedAt, receiverId;
+        public string syncedAt, receiverId, stage;
         public bool frozen;
     }
 
@@ -97,6 +99,8 @@ public sealed class ReportQueue
         entry.frozen = true; entry.state = "uploading"; entry.error = null;
         Write(entry); return Get(key);
     }
+
+    public void Stage(string key, string stage) { var entry = Get(key); entry.stage = stage; Write(entry); }
 
     public void Fail(string key, string error)
     {

@@ -47,6 +47,7 @@ public sealed class IssueReportForm : MonoBehaviour
     private string confirmedSnapshot, reportSnapshot;
     public string ConfirmedSnapshot => confirmedSnapshot;
     private Vector3 lockedPosition;
+    private IssueScanModel reportModel;
     private readonly string[] priorities = { "low", "medium", "high" };
 
     public void Initialize(Transform parent, ArProbe owner)
@@ -102,6 +103,8 @@ public sealed class IssueReportForm : MonoBehaviour
         ButtonAt(captureControls.transform, "返回首页", 25, 0.03f, 0.45f, () => { if (!NavigationLocked) ShowHome(); });
         capture = ButtonAt(captureControls.transform, "快照 / 下一步", 25, 0.5f, 0.97f, () => {
             if (!hasPosition || !probe.HasTrackedDraft) return;
+            try { reportModel = probe.FreezeIssueModel(); }
+            catch (Exception error) { Debug.LogWarning(error.Message); return; }
             lockedPosition = probe.CurrentPosition;
             TakeSnapshot(() => { reportSnapshot = confirmedSnapshot; PositionLocked = true; probe.LeaveCamera(); captureControls.SetActive(false); reportPanel.SetActive(true); RefreshControls(); });
         });
@@ -287,17 +290,20 @@ public sealed class IssueReportForm : MonoBehaviour
 
         if (string.IsNullOrWhiteSpace(title.text)) { message.text = "请填写问题标题。"; yield break; }
         if (string.IsNullOrEmpty(reportSnapshot)) { message.text = "请返回现场拍摄并确认快照。"; yield break; }
+        if (reportModel == null) { message.text = "请返回扫描并重新选点。"; yield break; }
         var point = lockedPosition;
-        var payload = new ReportPayload { title = title.text.Trim(), description = description.text,
+        var payload = new ReportPayload { reportVersion = 2, model = reportModel, title = title.text.Trim(), description = description.text,
             snapshot = reportSnapshot, priority = priorities[priorityIndex], position = new IssueHistoryPanel.Position { x = point.x, y = point.y, z = point.z } };
         try {
-            var entry = local.Add(draftServer ?? activeServer, "/api/reports", JsonUtility.ToJson(payload), receiverIdentity: draftReceiverId);
+            var body = JsonUtility.ToJson(payload);
+            if (System.Text.Encoding.UTF8.GetByteCount(body) > 32 * 1024 * 1024) throw new InvalidOperationException("完整资料超过 32 MiB，请减少扫描范围后重试。");
+            var entry = local.Add(draftServer ?? activeServer, "/api/reports", body, frozen: true, receiverIdentity: draftReceiverId);
             probe.KeepQueuedMarker(entry.server, entry.key);
         } catch (Exception error) {
             message.text = "本地保存失败，图片和内容仍保留，请重试。"; Debug.LogException(error); yield break;
         }
         // The durable queue owns the complete request now; another capture is independent.
-        ClearSnapshot(); reportSnapshot = null;
+        ClearSnapshot(); reportSnapshot = null; reportModel = null;
         hasPosition = false; PositionLocked = false;
         draftServer = null; draftReceiverId = null; title.text = ""; description.text = "";
         message.text = "已保存到本地，待上传。";

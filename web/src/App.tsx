@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react'
+import { lazy, Suspense, useEffect, useState } from 'react'
 import { errorMessage, listIssues, serverAddress, updateStatus, updateContent, type Issue } from './api'
 import './App.css'
+const ModelViewer = lazy(() => import('./ModelViewer').then(module => ({ default: module.ModelViewer })))
 
 const priorityNames = { low: '低', medium: '中', high: '高' }
 const statusNames = { open: '待处理', in_progress: '处理中', resolved: '已解决' }
@@ -11,6 +12,7 @@ function IssueCard({ issue, address, onSaved }: { issue: Issue; address: string;
   const [failedPhoto, setFailedPhoto] = useState('')
   const [imageRetry, setImageRetry] = useState(0)
   const [saving, setSaving] = useState(false)
+  const [showModel, setShowModel] = useState(false)
   const photo = `${serverAddress(address)}/api/issues/${encodeURIComponent(issue.id)}/snapshot?v=${encodeURIComponent(issue.updatedAt)}&retry=${imageRetry}`
   const imageError = failedPhoto === photo
 
@@ -46,11 +48,14 @@ function IssueCard({ issue, address, onSaved }: { issue: Issue; address: string;
     <div className="row"><span className={`priority ${issue.priority}`}>{priorityNames[issue.priority]}优先级</span><span>{statusNames[issue.status]}</span></div>
     <h2>{issue.title}</h2><p className="id">编号：{issue.id}</p>
     <p>{issue.description || '未填写描述'}</p>
+    <button onClick={() => setShowModel(false)}>现场照片</button><button onClick={() => setShowModel(true)}>三维模型</button>
+    {showModel ? (issue.modelUrl ? <Suspense fallback={<p>正在加载三维查看器…</p>}><ModelViewer key={issue.id + issue.updatedAt + address} address={address} id={issue.id} revision={issue.updatedAt} /></Suspense> : <p>旧记录无模型</p>) : <>
     {issue.snapshotUrl ? <div className="snapshot">
       {imageError ? <p role="alert">图片加载失败。<button onClick={() => { setImageRetry(value => value + 1) }}>重试图片</button></p> :
         <button className="photo-button" aria-label={`${issue.title} 查看现场大图`} onClick={() => setExpanded(true)}><img src={photo} alt={`${issue.title} 现场快照`} onError={() => setFailedPhoto(photo)} /></button>}
       {expanded && <dialog open aria-label="现场大图"><button autoFocus onClick={() => setExpanded(false)}>关闭大图</button><img src={photo} alt={`${issue.title} 现场大图`} onError={() => setFailedPhoto(photo)} />{imageError && <p role="alert">图片加载失败，请关闭后重试。</p>}</dialog>}
     </div> : <p>无快照（旧记录，可在手机现场补采）</p>}
+    </>}
     {draft ? <form className="content-editor" onSubmit={event => { void saveContent(event) }}>
       <label>标题<input aria-label={`${issue.title} 标题`} value={draft.title} disabled={saving} required onChange={event => setDraft({ ...draft, title: event.target.value })} /></label>
       <label>描述<textarea aria-label={`${issue.title} 描述`} value={draft.description} disabled={saving} onChange={event => setDraft({ ...draft, description: event.target.value })} /></label>

@@ -1,4 +1,5 @@
 export type Issue = {
+  modelUrl?: string
   snapshotUrl?: string
   id: string
   title: string
