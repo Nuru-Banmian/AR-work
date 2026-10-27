@@ -29,9 +29,6 @@ public static class InspectionNavigationChecks
     {
         var queuePath = Path.Combine(Application.persistentDataPath, "report-queue-v1");
         if (Directory.Exists(queuePath)) Directory.Move(queuePath, queuePath + ".navigation-backup");
-        SessionState.SetBool("depth.exists", PlayerPrefs.HasKey(ArProbe.DepthPreference));
-        SessionState.SetInt("depth.backup", PlayerPrefs.GetInt(ArProbe.DepthPreference, 0));
-        PlayerPrefs.DeleteKey(ArProbe.DepthPreference);
         foreach (var key in new[] { "arwork.server", "arwork.pending-report", "arwork.receiver-id" })
         {
             SessionState.SetBool(key + ".exists", PlayerPrefs.HasKey(key));
@@ -47,8 +44,6 @@ public static class InspectionNavigationChecks
 
     internal static void Finish(int code)
     {
-        if (SessionState.GetBool("depth.exists", false)) PlayerPrefs.SetInt(ArProbe.DepthPreference, SessionState.GetInt("depth.backup", 0));
-        else PlayerPrefs.DeleteKey(ArProbe.DepthPreference);
         foreach (var key in new[] { "arwork.server", "arwork.pending-report", "arwork.receiver-id" })
             if (SessionState.GetBool(key + ".exists", false)) PlayerPrefs.SetString(key, SessionState.GetString(key + ".backup", ""));
             else PlayerPrefs.DeleteKey(key);
@@ -125,14 +120,11 @@ public sealed class InspectionNavigationRunner : MonoBehaviour
         var probe = FindObjectOfType<ArProbe>(); var form = probe.GetComponent<IssueReportForm>(); var history = probe.GetComponent<IssueHistoryPanel>();
         Check(!probe.CameraActive && (XRGeneralSettings.Instance == null || !XRGeneralSettings.Instance.Manager.isInitializationComplete), "startup leaves XR uninitialized");
         Check(history.IsOpen && !Field<GameObject>(form, "reportPanel").activeSelf, "startup opens records, not form");
-        var depthButton = Field<GameObject>(form, "settingsPanel").transform.Find("深度辅助：关").GetComponent<Button>();
-        Check(!probe.DepthAssistanceEnabled, "depth defaults off");
-        depthButton.onClick.Invoke();
-        Check(probe.DepthAssistanceEnabled && PlayerPrefs.GetInt(ArProbe.DepthPreference) == 1, "settings depth switch persists enabled choice");
-        Check(!probe.CameraActive && !Field<UnityEngine.XR.ARFoundation.AROcclusionManager>(probe, "occlusion").enabled,
-            "enabling depth in settings does not start camera or depth capture");
-        depthButton.onClick.Invoke();
-        Check(!probe.DepthAssistanceEnabled && PlayerPrefs.GetInt(ArProbe.DepthPreference) == 0, "settings depth switch persists disabled choice");
+        Check(Field<GameObject>(form,"settingsPanel").transform.Find("深度辅助：关")==null
+            && Field<GameObject>(form,"settingsPanel").transform.Find("深度辅助：开")==null,"obsolete plane/depth assistance switch is removed");
+        Check(Field<GameObject>(probe,"originRoot").GetComponent<UnityEngine.XR.ARFoundation.ARPlaneManager>()==null,
+            "AR origin has no plane detection manager");
+        Check(!Field<UnityEngine.XR.ARFoundation.AROcclusionManager>(probe,"occlusion").enabled,"idle app does not collect depth");
         var rows = Field<RectTransform>(history, "rows");
         Check(rows.childCount == 1 && rows.GetComponentInChildren<Text>().text.Contains("Server A"), "homepage reads HTTP records");
         var homePhoto = rows.GetComponentInChildren<RawImage>();

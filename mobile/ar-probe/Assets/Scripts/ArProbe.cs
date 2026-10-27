@@ -9,7 +9,7 @@ using UnityEngine.XR.ARFoundation;
 using UnityEngine.XR.ARSubsystems;
 using UnityEngine.XR.Management;
 
-// Shared plane tracking for the standalone probe and inspection app.
+// AR session and local-scan marker interaction. No plane detection or fallback plane placement.
 public sealed class ArProbe : MonoBehaviour
 {
     public bool inspectionMode;
@@ -18,29 +18,28 @@ public sealed class ArProbe : MonoBehaviour
     public Material planeMaterial;
     private ARSession session;
     private ARInputManager inputManager;
-    private ARPlaneManager planes;
-    private ARRaycastManager raycasts;
-    private ARAnchorManager anchors;
     private AROcclusionManager occlusion;
+    private ARCameraManager arCameraManager;
+    private bool cameraFrameSeen;
+    private double latestCameraTimestamp;
+    private LocalSurfaceScanner surfaceScanner;
+    private Transform safeUi;
     private GameObject originRoot, cameraHud;
     private Coroutine starting;
     public bool CameraActive { get; private set; }
-    private bool useDepth;
+    public bool SurfaceInteractionActive => surfaceScanner != null && surfaceScanner.BlocksPlacement;
+    public void OpenSavedScans() { surfaceScanner?.ShowLibrary(); }
     private bool snapshotMode;
     public void SetSnapshotMode(bool enabled) {
         snapshotMode = enabled;
-        if (enabled && planes != null) foreach (var plane in planes.trackables) {
-            var visualizer = plane.GetComponent<ARPlaneMeshVisualizer>(); if (visualizer != null) visualizer.enabled = false;
-            var renderer = plane.GetComponent<Renderer>(); if (renderer != null) renderer.enabled = false;
-        }
+        surfaceScanner?.SetVisible(!enabled && CameraActive && reportForm != null && !reportForm.PositionLocked);
+
     }
-    public const string DepthPreference = "arwork.depth-assisted";
-    public bool DepthAssistanceEnabled => PlayerPrefs.GetInt(DepthPreference, 0) == 1;
     private ARAnchor markerAnchor;
     private GameObject marker;
+    private Mesh pointedMarkerMesh;
     private Text status;
     private Text notice;
-    private readonly List<ARRaycastHit> hits = new List<ARRaycastHit>();
     private readonly List<RaycastResult> uiHits = new List<RaycastResult>();
     private Vector3 lastPosition;
     private readonly Dictionary<string, ARAnchor> savedMarkers = new Dictionary<string, ARAnchor>();
@@ -53,7 +52,6 @@ public sealed class ArProbe : MonoBehaviour
     {
         Screen.sleepTimeout = SleepTimeout.NeverSleep;
         Application.targetFrameRate = inspectionMode ? 30 : 60;
-        useDepth = DepthAssistanceEnabled;
         if (inspectionMode)
         {
             var background = new GameObject("Page background").AddComponent<Camera>();
@@ -85,7 +83,9 @@ public sealed class ArProbe : MonoBehaviour
         camera.farClipPlane = 100f;
         camera.clearFlags = CameraClearFlags.SolidColor;
         camera.backgroundColor = Color.black;
-        cameraObject.AddComponent<ARCameraManager>();
+        arCameraManager = cameraObject.AddComponent<ARCameraManager>();
+        arCameraManager.autoFocusRequested = true;
+        arCameraManager.frameReceived += OnCameraFrame;
         cameraObject.AddComponent<ARCameraBackground>();
         if (inspectionMode)
         {
@@ -102,15 +102,15 @@ public sealed class ArProbe : MonoBehaviour
         pose.updateType = TrackedPoseDriver.UpdateType.UpdateAndBeforeRender;
         origin.Camera = camera;
         origin.CameraFloorOffsetObject = offset;
-        planes = originObject.AddComponent<ARPlaneManager>();
-        planes.requestedDetectionMode = inspectionMode
-            ? PlaneDetectionMode.Horizontal | PlaneDetectionMode.Vertical : PlaneDetectionMode.Horizontal;
-        planes.planesChanged += OnPlanesChanged;
-        raycasts = originObject.AddComponent<ARRaycastManager>();
-        anchors = originObject.AddComponent<ARAnchorManager>();
+        originObject.AddComponent<ARAnchorManager>();
         originRoot = originObject;
         originObject.SetActive(!inspectionMode);
         origin.RequestedTrackingOriginMode = XROrigin.TrackingOriginMode.Device;
+        if (inspectionMode)
+        {
+            surfaceScanner = gameObject.AddComponent<LocalSurfaceScanner>();
+            surfaceScanner.Initialize(this, safeUi, camera, occlusion);
+        }
     }
 
     private IEnumerator Start()
@@ -122,6 +122,7 @@ public sealed class ArProbe : MonoBehaviour
     {
         if (CameraActive) return;
         CameraActive = true;
+        cameraFrameSeen = false; latestCameraTimestamp = 0;
         cameraHud.SetActive(true);
         GetComponent<IssueLiveUpdates>()?.ShowLabel(false);
         starting = StartCoroutine(StartAr());
@@ -130,10 +131,13 @@ public sealed class ArProbe : MonoBehaviour
     public void LeaveCamera()
     {
         CameraActive = false;
+        surfaceScanner?.SetVisible(false);
         if (starting != null) StopCoroutine(starting);
         starting = null;
-        session.enabled = false;
+        // Stop camera/depth consumers before pausing the native AR session.
+        if (occlusion != null) occlusion.enabled = false;
         originRoot.SetActive(false);
+        session.enabled = false;
         inputManager.enabled = false;
         var manager = XRGeneralSettings.Instance != null ? XRGeneralSettings.Instance.Manager : null;
         if (manager != null && manager.isInitializationComplete) manager.StopSubsystems();
@@ -170,12 +174,12 @@ public sealed class ArProbe : MonoBehaviour
         if (!manager.isInitializationComplete) yield return manager.InitializeLoader();
         if (inspectionMode && !CameraActive) yield break;
         if (manager.activeLoader == null) { notice.text = "此设备无法启动定位服务，可返回查看记录。"; yield break; }
+        // Keep the XR loader lifecycle symmetric; AR Foundation components own their subsystems.
         manager.StartSubsystems();
         inputManager.enabled = true;
-        originRoot.SetActive(true);
-        ApplyDepth();
-        Debug.Log("ARWORK_CAMERA_ACTIVE=true");
+        Debug.Log("ARWORK_START_STAGE=availability state="+ARSession.state);
         yield return ARSession.CheckAvailability();
+        Debug.Log("ARWORK_START_STAGE=available state="+ARSession.state);
         if (ARSession.state == ARSessionState.NeedsInstall)
         {
             notice.text = "定位服务需要安装或更新，请按系统提示操作。";
@@ -184,8 +188,16 @@ public sealed class ArProbe : MonoBehaviour
         if (ARSession.state == ARSessionState.Ready || ARSession.state == ARSessionState.SessionInitializing
             || ARSession.state == ARSessionState.SessionTracking)
         {
+            // ARCore resume can synchronously wait for camera output after depth capture.
+            // Prepare camera consumers first, then resume the native session in this same frame.
+            if (inspectionMode && !CameraActive) yield break;
+            Debug.Log("ARWORK_START_STAGE=consumers_enable");
+            originRoot.SetActive(true);
+            ApplyDepth();
+            Debug.Log("ARWORK_START_STAGE=session_enable");
             session.enabled = true;
-            notice.text = "缓慢移动手机扫描地面或墙面，点击表面放置标记。";
+            Debug.Log("ARWORK_CAMERA_ACTIVE=true");
+            notice.text = "请开始局部扫描，暂停后点击实物位置放标记。";
         }
         else
         {
@@ -193,39 +205,23 @@ public sealed class ArProbe : MonoBehaviour
         }
     }
 
-    private void OnPlanesChanged(ARPlanesChangedEventArgs changes)
+    private void OnCameraFrame(ARCameraFrameEventArgs frame)
     {
-        foreach (var plane in changes.added)
-        {
-            plane.gameObject.AddComponent<MeshFilter>();
-            var renderer = plane.gameObject.AddComponent<MeshRenderer>();
-            renderer.sharedMaterial = planeMaterial;
-            if (inspectionMode)
-            {
-                var tint = new MaterialPropertyBlock();
-                tint.SetColor("_Color", new Color(0.1f, 0.8f, 0.35f, 0.08f));
-                renderer.SetPropertyBlock(tint);
-            }
-            var visualizer = plane.gameObject.AddComponent<ARPlaneMeshVisualizer>();
-            visualizer.trackingStateVisibilityThreshold = TrackingState.Tracking;
-            visualizer.hideSubsumed = true;
-        }
+        if (frame.timestampNs.HasValue) latestCameraTimestamp=frame.timestampNs.Value*1e-9;
+        if (!CameraActive || cameraFrameSeen || frame.textures == null || frame.textures.Count == 0) return;
+        cameraFrameSeen = true;
+        var texture = frame.textures[0];
+        Debug.Log("ARWORK_CAMERA_FRAME texture=" + texture.width + "x" + texture.height
+            + " autofocus=" + arCameraManager.autoFocusEnabled + " configuration=" + arCameraManager.currentConfiguration);
     }
 
     private void Update()
     {
         if (inspectionMode && !CameraActive) return;
-        foreach (var plane in planes.trackables)
-        {
-            // The visualizer owns renderer visibility. Disable it when the whole session loses tracking.
-            var visualizer = plane.GetComponent<ARPlaneMeshVisualizer>();
-            if (visualizer != null) visualizer.enabled = !snapshotMode && ARSession.state == ARSessionState.SessionTracking && plane.subsumedBy == null;
-        }
-        if (snapshotMode) foreach (var plane in planes.trackables) { var renderer = plane.GetComponent<Renderer>(); if (renderer != null) renderer.enabled = false; }
+        surfaceScanner?.SetVisible(!snapshotMode && reportForm != null && !reportForm.PositionLocked);
         status.text = ARSession.state == ARSessionState.SessionTracking ? "园区巡检 · 定位正常" : "园区巡检 · 正在识别环境";
-        if (inspectionMode && useDepth)
-            status.text += occlusion.currentEnvironmentDepthMode == EnvironmentDepthMode.Disabled
-                ? " · 深度准备中/不可用" : " · 深度辅助已启用";
+        if (surfaceScanner != null && surfaceScanner.RequiresDepth)
+            status.text += occlusion.currentEnvironmentDepthMode == EnvironmentDepthMode.Disabled ? " · 等待深度" : " · 扫描深度已启用";
         if (ARSession.state != ARSessionState.SessionTracking || Input.touchCount == 0) return;
         if (reportForm != null && reportForm.PositionLocked) return;
         var touch = Input.GetTouch(0);
@@ -234,85 +230,112 @@ public sealed class ArProbe : MonoBehaviour
         uiHits.Clear();
         EventSystem.current.RaycastAll(pointer, uiHits);
         if (uiHits.Count != 0) return;
-
-        if (useDepth && occlusion != null && occlusion.currentEnvironmentDepthMode != EnvironmentDepthMode.Disabled
-            && raycasts.Raycast(touch.position, hits, TrackableType.Depth))
+        if (surfaceScanner != null && surfaceScanner.BlocksPlacement)
         {
-            foreach (var hit in hits)
-            {
-                // This is the documented useful range, not a claim of measurement accuracy.
-                if (hit.distance < 0.5f || hit.distance > 5f) continue;
-                var anchorObject = new GameObject("Depth inspection anchor");
-                anchorObject.transform.SetPositionAndRotation(hit.pose.position, hit.pose.rotation);
-                var depthAnchor = anchorObject.AddComponent<ARAnchor>();
-                if (depthAnchor.trackableId == TrackableId.invalidId || depthAnchor.trackingState != TrackingState.Tracking)
-                {
-                    Destroy(anchorObject);
-                    continue;
-                }
-                PlaceMarker(depthAnchor, hit, "Depth");
-                return;
-            }
-        }
-
-        if (!raycasts.Raycast(touch.position, hits, TrackableType.PlaneWithinPolygon))
-        {
-            notice.text = "暂未找到可用位置，请缓慢移动并对准有纹理的表面。";
+            surfaceScanner.Pick(touch.position);
             return;
         }
-        foreach (var hit in hits)
+        if (surfaceScanner != null && surfaceScanner.Raycast(touch.position, out var surfacePose))
         {
-            var plane = planes.GetPlane(hit.trackableId);
-            if (plane == null || (plane.alignment != PlaneAlignment.HorizontalUp &&
-                !(inspectionMode && plane.alignment == PlaneAlignment.Vertical))
-                || plane.trackingState != TrackingState.Tracking) continue;
-            var newAnchor = anchors.AttachAnchor(plane, hit.pose);
-            if (newAnchor == null)
-            {
-                notice.text = "未能固定标记，请重新扫描后选点。";
-                return;
-            }
-            PlaceMarker(newAnchor, hit, plane.alignment == PlaneAlignment.Vertical ? "Wall plane" : "Floor plane");
+            TryPlacePose(surfacePose, "Reconstructed surface");
             return;
         }
-        notice.text = "请点击已识别的地面或墙面。";
-    }
 
-    public void SetDepthAssistance(bool enabled)
-    {
-        useDepth = enabled;
-        PlayerPrefs.SetInt(DepthPreference, enabled ? 1 : 0); PlayerPrefs.Save();
-        ApplyDepth();
+        notice.text = "请先开始局部扫描，暂停后点击实物位置放标记。";
     }
 
     private void ApplyDepth()
     {
         if (occlusion == null) return;
-        occlusion.requestedEnvironmentDepthMode = useDepth ? EnvironmentDepthMode.Fastest : EnvironmentDepthMode.Disabled;
-        occlusion.enabled = CameraActive && useDepth;
-        Debug.Log("ARWORK_DEPTH_REQUESTED=" + useDepth + " camera=" + CameraActive);
+        bool required = surfaceScanner != null && surfaceScanner.RequiresDepth;
+        occlusion.requestedEnvironmentDepthMode = required ? EnvironmentDepthMode.Fastest : EnvironmentDepthMode.Disabled;
+        occlusion.enabled = CameraActive && required;
+        Debug.Log("ARWORK_DEPTH_REQUESTED=" + required + " camera=" + CameraActive);
     }
 
-    private void PlaceMarker(ARAnchor newAnchor, ARRaycastHit hit, string source)
+    public void RefreshDepth() { ApplyDepth(); }
+
+    public bool TryDepthPose(Vector2 position, out Pose pose, out string reason)
+    {
+        pose=default; reason="请等待定位和深度数据稳定后再选中心。";
+        if (ARSession.state!=ARSessionState.SessionTracking || occlusion==null
+            || !arCameraManager.TryGetIntrinsics(out var intrinsics)
+            || intrinsics.focalLength.x<=0 || intrinsics.focalLength.y<=0
+            || !occlusion.TryAcquireSmoothedEnvironmentDepthCpuImage(out var image)) return false;
+        using (image)
+        {
+            if (image.format!=XRCpuImage.Format.DepthUint16 || latestCameraTimestamp==0
+                || System.Math.Abs(latestCameraTimestamp-image.timestamp)>0.1) return false;
+            var camera=arCameraManager.GetComponent<Camera>();
+            var cameraToWorld=SurfaceMeshData.NativeCameraToWorld(camera.transform.localToWorldMatrix,Screen.orientation);
+            var direction=cameraToWorld.inverse.MultiplyVector(camera.ScreenPointToRay(position).direction);
+            if (direction.z<=0) return false;
+            float scale=Mathf.Max((float)image.width/intrinsics.resolution.x,(float)image.height/intrinsics.resolution.y);
+            var focal=intrinsics.focalLength*scale;
+            var principal=(intrinsics.principalPoint-(Vector2)intrinsics.resolution*0.5f)*scale
+                +new Vector2(image.width,image.height)*0.5f-Vector2.one*0.5f;
+            int u=Mathf.RoundToInt(focal.x*direction.x/direction.z+principal.x);
+            int v=Mathf.RoundToInt(-focal.y*direction.y/direction.z+principal.y);
+            if (u<1 || v<1 || u>=image.width-1 || v>=image.height-1) return false;
+            var plane=image.GetPlane(0); var samples=new float[9]; int index=0;
+            for (int y=v-1;y<=v+1;y++) for (int x=u-1;x<=u+1;x++)
+            {
+                int offset=y*plane.rowStride+x*plane.pixelStride;
+                samples[index++]=(plane.data[offset]|plane.data[offset+1]<<8)*0.001f;
+            }
+            bool valid=SurfaceMeshData.TryMedianDepth(samples,out float metres,out reason);
+            Debug.Log("ARWORK_SCAN_PICK valid="+valid+" depth="+metres.ToString("F3")+" pixel="+u+","+v);
+            if (!valid) return false;
+            var point=SurfaceMeshData.Unproject(u,v,metres,image.width,image.height,
+                intrinsics.focalLength,intrinsics.principalPoint,intrinsics.resolution);
+            pose=new Pose(cameraToWorld.MultiplyPoint3x4(point),Quaternion.identity); return true;
+        }
+    }
+
+    private void TryPlacePose(Pose pose, string source)
+    {
+        var root = new GameObject("Surface inspection anchor");
+        root.transform.SetPositionAndRotation(pose.position, pose.rotation);
+        var newAnchor = root.AddComponent<ARAnchor>();
+        if (newAnchor.trackableId == TrackableId.invalidId || newAnchor.trackingState != TrackingState.Tracking)
+        { Destroy(root); notice.text = "未能固定标记，请恢复跟踪后重试。"; return; }
+        PlaceMarkerAt(newAnchor, pose.position, source);
+    }
+
+    private void PlaceMarkerAt(ARAnchor newAnchor, Vector3 position, string source)
     {
         if (marker == null)
         {
-            marker = GameObject.CreatePrimitive(PrimitiveType.Cube);
-            marker.name = "10 cm inspection marker";
-            marker.transform.localScale = Vector3.one * 0.1f;
+            marker = new GameObject("2 cm pointed inspection marker",typeof(MeshFilter),typeof(MeshRenderer));
+            if (pointedMarkerMesh == null) pointedMarkerMesh=CreateMarkerMesh();
+            marker.GetComponent<MeshFilter>().sharedMesh=pointedMarkerMesh;
             marker.GetComponent<Renderer>().sharedMaterial = markerMaterial;
             SetMarkerColor(marker.GetComponent<Renderer>(), Color.yellow);
-            Destroy(marker.GetComponent<Collider>());
         }
-        lastPosition = hit.pose.position;
+        lastPosition = position;
         marker.transform.SetParent(newAnchor.transform, false);
-        marker.transform.localPosition = Vector3.up * 0.05f;
+        marker.transform.localPosition = Vector3.zero;
         marker.transform.localRotation = Quaternion.identity;
         if (markerAnchor != null) Destroy(markerAnchor.gameObject);
         markerAnchor = newAnchor;
         if (reportForm != null) reportForm.MarkPositionSelected();
         notice.text = "位置已选中，可继续点击调整。";
-        Debug.Log("ARWORK_PLACED source=" + source + " distance=" + hit.distance.ToString("F2") + " position=" + lastPosition.ToString("F3"));
+        Debug.Log("ARWORK_PLACED source=" + source + " position=" + lastPosition.ToString("F3"));
+    }
+
+    internal static Mesh CreateMarkerMesh()
+    {
+        var mesh=new Mesh { name="Pointed triangular marker" };
+        // Local +Y is the outward surface normal. The apex at zero touches the selected point.
+        mesh.vertices=new[] {Vector3.zero,new Vector3(-0.01f,0.025f,-0.006f),
+            new Vector3(0.01f,0.025f,-0.006f),new Vector3(0,0.025f,0.012f)};
+        mesh.triangles=new[] {0,1,2,0,2,3,0,3,1,1,3,2};
+        mesh.RecalculateNormals(); mesh.RecalculateBounds(); return mesh;
+    }
+    private void OnDestroy()
+    {
+        if (arCameraManager != null) arCameraManager.frameReceived-=OnCameraFrame;
+        if (pointedMarkerMesh != null) Destroy(pointedMarkerMesh);
     }
 
     public Vector3 CurrentPosition => markerAnchor != null ? markerAnchor.transform.position : lastPosition;
@@ -422,6 +445,7 @@ public sealed class ArProbe : MonoBehaviour
         scaler.matchWidthOrHeight = 0f;
         var safe = new GameObject("Safe area", typeof(RectTransform)).GetComponent<RectTransform>();
         safe.SetParent(canvasObject.transform, false);
+        safeUi = safe;
         var area = Screen.safeArea;
         safe.anchorMin = new Vector2(area.xMin / Screen.width, area.yMin / Screen.height);
         safe.anchorMax = new Vector2(area.xMax / Screen.width, area.yMax / Screen.height);
