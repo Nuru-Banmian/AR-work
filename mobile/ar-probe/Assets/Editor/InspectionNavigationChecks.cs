@@ -32,13 +32,14 @@ public static class InspectionNavigationChecks
         SessionState.SetBool("depth.exists", PlayerPrefs.HasKey(ArProbe.DepthPreference));
         SessionState.SetInt("depth.backup", PlayerPrefs.GetInt(ArProbe.DepthPreference, 0));
         PlayerPrefs.DeleteKey(ArProbe.DepthPreference);
-        foreach (var key in new[] { "arwork.server", "arwork.pending-report" })
+        foreach (var key in new[] { "arwork.server", "arwork.pending-report", "arwork.receiver-id" })
         {
             SessionState.SetBool(key + ".exists", PlayerPrefs.HasKey(key));
             SessionState.SetString(key + ".backup", PlayerPrefs.GetString(key));
         }
         PlayerPrefs.SetString("arwork.server", "http://127.0.0.1:18081");
         PlayerPrefs.DeleteKey("arwork.pending-report");
+        PlayerPrefs.SetString("arwork.receiver-id", new string('a', 32));
         SessionState.SetBool(Flag, true);
         EditorSceneManager.OpenScene("Assets/Inspection.unity");
         EditorApplication.EnterPlaymode();
@@ -48,7 +49,7 @@ public static class InspectionNavigationChecks
     {
         if (SessionState.GetBool("depth.exists", false)) PlayerPrefs.SetInt(ArProbe.DepthPreference, SessionState.GetInt("depth.backup", 0));
         else PlayerPrefs.DeleteKey(ArProbe.DepthPreference);
-        foreach (var key in new[] { "arwork.server", "arwork.pending-report" })
+        foreach (var key in new[] { "arwork.server", "arwork.pending-report", "arwork.receiver-id" })
             if (SessionState.GetBool(key + ".exists", false)) PlayerPrefs.SetString(key, SessionState.GetString(key + ".backup", ""));
             else PlayerPrefs.DeleteKey(key);
         var queuePath = Path.Combine(Application.persistentDataPath, "report-queue-v1");
@@ -87,14 +88,14 @@ public sealed class InspectionNavigationRunner : MonoBehaviour
     private IEnumerator Verify()
     {
         fixture = new HttpListener();
-        fixture.Prefixes.Add("http://127.0.0.1:18081/"); fixture.Prefixes.Add("http://127.0.0.1:18082/"); fixture.Start();
+        fixture.Prefixes.Add("http://127.0.0.1:18081/"); fixture.Prefixes.Add("http://127.0.0.1:18082/"); fixture.Prefixes.Add("http://127.0.0.1:18083/"); fixture.Start();
         _ = Task.Run(async () => {
             try
             {
                 while (fixture.IsListening)
                 {
                     var context = await fixture.GetContextAsync();
-                    var request = context.Request; string source = request.Url.Port == 18081 ? "A" : "B";
+                    var request = context.Request; string source = request.Url.Port == 18082 ? "B" : "A";
                     string issue = "{\"id\":\"same-id\",\"title\":\"Server " + source + "\",\"description\":\"fixture\",\"priority\":\"medium\",\"status\":\"in_progress\",\"position\":{\"x\":1,\"y\":2,\"z\":3}}";
                     if (source == "A" || (request.HttpMethod == "POST" && request.Url.AbsolutePath == "/api/reports")) issue = issue.Substring(0, issue.Length - 1) + ",\"snapshotUrl\":\"/api/issues/same-id/snapshot\"}";
                     if (request.Url.AbsolutePath.EndsWith("/snapshot")) {
@@ -108,6 +109,7 @@ public sealed class InspectionNavigationRunner : MonoBehaviour
                         lastPostBody = new StreamReader(request.InputStream).ReadToEnd();
                         lastPostKey = request.Headers["Idempotency-Key"]; lastPostPort = request.Url.Port;
                     }
+                    if (request.Url.AbsolutePath == "/api/receiver") body = "{\"data\":{\"id\":\"" + (source == "A" ? new string('a',32) : new string('b',32)) + "\",\"name\":\"Fixture " + source + "\",\"protocol\":1,\"port\":" + request.Url.Port + "}}";
                     if (request.Url.AbsolutePath == "/health") body = "{\"data\":{\"status\":\"ok\"}}";
                     if (responseMode == 1 && request.Url.AbsolutePath == "/api/issues") body = "{\"data\":[]}";
                     if (responseMode == 2) context.Response.StatusCode = 500;
@@ -167,8 +169,18 @@ public sealed class InspectionNavigationRunner : MonoBehaviour
         history.Hide(); form.ShowHome(); yield return new WaitForSecondsRealtime(1);
         rows.GetComponentInChildren<Button>().onClick.Invoke(); yield return new WaitForSecondsRealtime(1);
         Check(Field<InputField>(history, "title").text == "unsaved draft A", "navigation preserves content draft");
+        form.MarkPositionSelected();
+        yield return form.StartCoroutine((IEnumerator)form.GetType().GetMethod("SelectReceiver", BindingFlags.Instance | BindingFlags.NonPublic)
+            .Invoke(form, new object[] { new ReceiverInfo { id = new string('a',32), address = "http://127.0.0.1:18083" } }));
+        yield return new WaitForSecondsRealtime(1);
+        Check(Field<string>(history, "server") == "http://127.0.0.1:18083" && Field<InputField>(history, "title").text == "unsaved draft A",
+            "same receiver readdress keeps open detail and unsaved content at new address");
+        Check(Field<string>(form, "draftServer") == "http://127.0.0.1:18083" && Field<string>(form, "draftReceiverId") == new string('a',32),
+            "same receiver readdress preserves capture draft identity and follows new address");
         history.Hide(); Field<InputField>(form, "address").text = "http://127.0.0.1:18082";
-        Check((bool)Call(form, "SaveAddress"), "settings accepts new service"); form.ShowHome();
+        Check(!(bool)Call(form, "SaveAddress"), "unverified typed address cannot switch service");
+        yield return form.StartCoroutine((IEnumerator)Call(form, "TestConnection"));
+        Check((bool)Call(form, "SaveAddress"), "settings accepts identity-verified service"); form.ShowHome();
         Check(rows.GetComponentsInChildren<Button>().Length == 0, "service switch immediately hides previous rows");
         yield return new WaitForSecondsRealtime(1);
         Check(rows.GetComponentInChildren<Text>().text.Contains("Server B"), "new service reads its own records");
@@ -181,7 +193,7 @@ public sealed class InspectionNavigationRunner : MonoBehaviour
         Check(PlayerPrefs.GetString("arwork.server") == "http://127.0.0.1:18082", "invalid input preserves saved service");
         Field<InputField>(form, "address").text = "http://127.0.0.1:18082";
         Field<Button>(form, "test").onClick.Invoke(); yield return new WaitForSecondsRealtime(1);
-        Check(Field<Text>(form, "settingsMessage").text == "连接成功。", "settings tests real health endpoint");
+        Check(Field<Text>(form, "settingsMessage").text.Contains("已连接：Fixture B"), "settings verifies real receiver handshake");
         responseMode = 1; form.ShowHome(); yield return new WaitForSecondsRealtime(1);
         Check(rows.childCount == 0 && Field<Text>(history, "message").text.Contains("暂无服务器问题"), "empty list gives actionable feedback");
         responseMode = 2; Field<Button>(history, "refresh").onClick.Invoke(); yield return new WaitForSecondsRealtime(1);

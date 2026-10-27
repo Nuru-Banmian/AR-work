@@ -41,7 +41,7 @@ public sealed class IssueHistoryPanel : MonoBehaviour
     private bool busy, detailLoaded;
     public bool CanApplyLive => !busy;
     private Content loadedContent;
-    private string server, selectedId;
+    private string server, selectedId, receiverScope;
     private readonly string[] priorities = { "low", "medium", "high" };
     private int priorityIndex;
     // A draft remains attached to its server and ID when navigating or retrying.
@@ -51,7 +51,7 @@ public sealed class IssueHistoryPanel : MonoBehaviour
     private bool online;
     private Issue displayedIssue;
     private readonly Dictionary<string, string> syncTimes = new Dictionary<string, string>();
-    private string SyncKey => server + "/" + (selectedId ?? "");
+    private string SyncKey => receiverScope + "/" + (selectedId ?? "");
     private string SyncTime => server != null && syncTimes.TryGetValue(SyncKey, out var time) ? InspectionUi.Time(time) : "尚未同步";
 
     public void MarkSyncUnavailable(string address)
@@ -154,15 +154,38 @@ public sealed class IssueHistoryPanel : MonoBehaviour
         return obj;
     }
 
-    public void Open(string address)
+    public void Open(string address, string identity = null)
     {
         if (Busy) return;
         CancelLoad(); KeepDraft();
-        bool changedServer = server != address;
+        var nextScope = string.IsNullOrEmpty(identity) ? address : identity;
+        bool changedServer = server != address || receiverScope != nextScope;
+        receiverScope = nextScope;
         server = address; selectedId = null; detailLoaded = false; online = false;
         if (changedServer) remoteRows = new Issue[0];
         RenderList(remoteRows);
         panel.SetActive(true); ShowPage(); BeginLoad();
+    }
+
+    // Called only after verifying the same receiver identity at a different address.
+    public void Readdress(string previous, string current)
+    {
+        if (server != previous || Busy || IsRemarking) return;
+        CancelLoad(); KeepDraft();
+        if (receiverScope == previous) {
+            MoveDraftKeys(drafts, previous, current); MoveDraftKeys(syncTimes, previous, current);
+            receiverScope = current;
+        }
+        server = current; online = false; photoView.Clear(); SetBusy(false);
+        if (IsOpen) BeginLoad();
+    }
+
+    private static void MoveDraftKeys<T>(Dictionary<string, T> values, string previous, string current)
+    {
+        foreach (var key in new List<string>(values.Keys)) {
+            if (!key.StartsWith(previous + "/", StringComparison.Ordinal)) continue;
+            values[current + key.Substring(previous.Length)] = values[key]; values.Remove(key);
+        }
     }
 
     public void Hide()
@@ -179,7 +202,7 @@ public sealed class IssueHistoryPanel : MonoBehaviour
         KeepDraft(); panel.SetActive(false); onClose();
     }
 
-    private string DraftKey => server + "/" + selectedId;
+    private string DraftKey => receiverScope + "/" + selectedId;
     private void KeepDraft()
     {
         if (selectedId == null || !detailLoaded || !detailPage.activeSelf || busy) return;

@@ -36,7 +36,7 @@ public sealed class LocalReports : MonoBehaviour
             queue = new ReportQueue(Path.Combine(Application.persistentDataPath, "report-queue-v1"));
             queue.List(server()); // fail closed on corrupt data
             sender = new ReportQueueSender(queue);
-            client = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
+            client = ReceiverDiscovery.CreateClient(15);
         } catch (Exception error) { failure = "本地队列读取失败，请保留应用数据。"; Debug.LogException(error); }
         panel = new GameObject("本地问题详情", typeof(RectTransform), typeof(Image));
         panel.transform.SetParent(parent, false);
@@ -75,11 +75,18 @@ public sealed class LocalReports : MonoBehaviour
         panel.SetActive(false);
     }
 
-    public ReportQueue.Entry Add(string address, string endpoint, string body, string key = null, bool frozen = false)
+    public ReportQueue.Entry Add(string address, string endpoint, string body, string key = null, bool frozen = false, string receiverIdentity = null)
     {
         if (failure != null) throw new IOException(failure);
-        var entry = queue.Add(address, endpoint, body, key, frozen);
+        var entry = queue.Add(address, endpoint, body, key, frozen, receiverIdentity);
         nextAttempt = Time.realtimeSinceStartup + 1; changed(); return entry;
+    }
+
+    public void RememberReceiver(string address, string id)
+    {
+        if (failure != null) throw new IOException(failure);
+        queue.RememberReceiver(address, id);
+        nextAttempt = 0;
     }
 
     public void RenderRows(Transform rows, IssueHistoryPanel.Issue[] remote)

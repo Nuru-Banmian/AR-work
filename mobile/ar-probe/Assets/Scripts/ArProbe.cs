@@ -318,6 +318,18 @@ public sealed class ArProbe : MonoBehaviour
     public Vector3 CurrentPosition => markerAnchor != null ? markerAnchor.transform.position : lastPosition;
     public bool HasTrackedDraft => markerAnchor != null && markerAnchor.trackingState == TrackingState.Tracking;
 
+    public void ReaddressMarkers(string previous, string current)
+    {
+        foreach (var key in new System.Collections.Generic.List<string>(savedMarkers.Keys)) {
+            if (!key.StartsWith(previous + "/", System.StringComparison.Ordinal)) continue;
+            savedMarkers[current + key.Substring(previous.Length)] = savedMarkers[key]; savedMarkers.Remove(key);
+        }
+        foreach (var key in new System.Collections.Generic.List<string>(markerStatuses.Keys)) {
+            if (!key.StartsWith(previous + "/", System.StringComparison.Ordinal)) continue;
+            markerStatuses[current + key.Substring(previous.Length)] = markerStatuses[key]; markerStatuses.Remove(key);
+        }
+    }
+
     public void KeepQueuedMarker(string server, string key)
     {
         KeepSubmittedMarker(server, "local-" + key);

@@ -27,7 +27,11 @@ public sealed class ReportQueueSender
             lastAttempt = entry.key;
             entry = queue.BeginSend(entry.key); // durable before any network I/O
             try {
-                using (var request = new HttpRequestMessage(HttpMethod.Post, entry.server + entry.endpoint)) {
+                var receiver = await ReceiverDiscovery.Verify(client, server, string.IsNullOrEmpty(entry.receiverId) ? queue.ReceiverAt(server) : entry.receiverId);
+                entry = queue.BindReceiver(entry.key, server, receiver.id);
+                queue.RememberLegacyReceiver(server, receiver.id);
+                using (var request = new HttpRequestMessage(HttpMethod.Post, server + entry.endpoint)) {
+                    request.Headers.Add("X-ARWork-Receiver", receiver.id);
                     request.Headers.Add("Idempotency-Key", entry.key);
                     request.Content = new StringContent(entry.body, Encoding.UTF8, "application/json");
                     using (var response = await client.SendAsync(request)) {

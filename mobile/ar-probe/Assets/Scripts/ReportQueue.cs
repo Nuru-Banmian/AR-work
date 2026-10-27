@@ -17,22 +17,62 @@ public sealed class ReportQueue
     {
         public int version = 1;
         public string key, server, endpoint, body, state = "pending", serverId, error, receipt;
-        public string syncedAt;
+        public string syncedAt, receiverId;
         public bool frozen;
     }
 
     private readonly string root;
     public ReportQueue(string directory) { root = directory; Directory.CreateDirectory(root); }
 
-    public Entry[] List(string server) => Directory.GetFiles(root, "*.json")
-        .Select(Read).Where(entry => entry.server == server).OrderBy(entry => entry.key).ToArray();
+    private string RoutesPath => Path.Combine(root, "routes", "receivers.json");
+    [Serializable] private sealed class Routes { public Route[] items = new Route[0]; }
+    [Serializable] private sealed class Route { public string address, id; }
+    private Routes ReadRoutes() => File.Exists(RoutesPath)
+        ? JsonUtility.FromJson<Routes>(File.ReadAllText(RoutesPath)) : new Routes();
+    public string ReceiverAt(string address) => ReadRoutes().items.FirstOrDefault(item => item.address == address)?.id;
+
+    public void RememberReceiver(string address, string id)
+    {
+        if (string.IsNullOrEmpty(id)) throw new ArgumentException("Missing receiver identity");
+        var routes = ReadRoutes();
+        routes.items = routes.items.Where(item => item.address != address && item.id != id)
+            .Concat(new[] { new Route { address = address, id = id } }).ToArray();
+        Directory.CreateDirectory(Path.GetDirectoryName(RoutesPath));
+        AtomicWrite(RoutesPath, JsonUtility.ToJson(routes));
+    }
+
+    public void RememberLegacyReceiver(string address, string id)
+    {
+        // A handshake that started before rediscovery must not roll a newer route back.
+        var routes = ReadRoutes();
+        if (routes.items.Any(item => item.id == id || item.address == address)) return;
+        RememberReceiver(address, id);
+    }
+
+    public Entry[] List(string server)
+    {
+        var id = ReceiverAt(server);
+        return Directory.GetFiles(root, "*.json").Select(Read)
+            .Where(entry => string.IsNullOrEmpty(entry.receiverId) ? entry.server == server : entry.receiverId == id)
+            .OrderBy(entry => entry.key).ToArray();
+    }
+
+    // A legacy entry can bind only at its original address after a successful handshake.
+    public Entry BindReceiver(string key, string address, string id)
+    {
+        var entry = Get(key);
+        if (string.IsNullOrEmpty(entry.receiverId) ? entry.server != address : entry.receiverId != id)
+            throw new InvalidOperationException("Receiver mismatch; frozen request retained");
+        entry.receiverId = id;
+        Write(entry); return Get(key);
+    }
 
     public Entry Get(string key) => Read(PathFor(key));
 
-    public Entry Add(string server, string endpoint, string body, string key = null, bool frozen = false)
+    public Entry Add(string server, string endpoint, string body, string key = null, bool frozen = false, string receiverIdentity = null)
     {
         var entry = new Entry { key = key ?? Guid.NewGuid().ToString("N"), server = server,
-            endpoint = endpoint, body = body, frozen = frozen };
+            endpoint = endpoint, body = body, frozen = frozen, receiverId = receiverIdentity ?? ReceiverAt(server) };
         Validate(entry);
         if (File.Exists(PathFor(entry.key))) {
             var existing = Get(entry.key);
@@ -103,11 +143,16 @@ public sealed class ReportQueue
 
     private void Write(Entry entry)
     {
-        var path = PathFor(entry.key); var temporary = path + ".tmp";
+        AtomicWrite(PathFor(entry.key), JsonUtility.ToJson(entry));
+    }
+
+    private static void AtomicWrite(string path, string json)
+    {
+        var temporary = path + ".tmp";
         try {
             using (var stream = new FileStream(temporary, FileMode.Create, FileAccess.Write, FileShare.None))
             using (var writer = new StreamWriter(stream)) {
-                writer.Write(JsonUtility.ToJson(entry)); writer.Flush(); stream.Flush(true);
+                writer.Write(json); writer.Flush(); stream.Flush(true);
             }
             if (File.Exists(path)) File.Replace(temporary, path, null);
             else File.Move(temporary, path);

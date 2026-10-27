@@ -454,11 +454,7 @@ func env(key, fallback string) string {
 }
 
 func main() {
-	handler, err := newAPI(env("ARWORK_DATA", "data/issues.json"), env("ARWORK_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173"))
-	if err != nil {
-		log.Fatalf("Cannot open issue data: %v", err)
+	if err := runReceiver(); err != nil {
+		log.Fatal(err)
 	}
-	server := &http.Server{Addr: env("ARWORK_ADDR", ":8080"), Handler: handler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 20 * time.Second, WriteTimeout: 20 * time.Second, IdleTimeout: 60 * time.Second}
-	log.Printf("AR Work listening on %s", server.Addr)
-	log.Fatal(server.ListenAndServe())
 }

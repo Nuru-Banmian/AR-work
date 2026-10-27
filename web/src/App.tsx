@@ -69,7 +69,7 @@ function IssueCard({ issue, address, onSaved }: { issue: Issue; address: string;
 }
 
 export default function App() {
-  const [address, setAddress] = useState(() => localStorage.getItem('arwork.server') || 'http://localhost:8080')
+  const [address, setAddress] = useState(() => import.meta.env.VITE_ARWORK_API || window.location.origin)
   const [activeAddress, setActiveAddress] = useState(address)
   const [revision, setRevision] = useState(0)
   const [issues, setIssues] = useState<Issue[]>([])
