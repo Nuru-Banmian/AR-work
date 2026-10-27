@@ -121,9 +121,11 @@ public sealed class InspectionNavigationRunner : MonoBehaviour
                         lastPostBody = new StreamReader(request.InputStream).ReadToEnd();
                         lastPostKey = request.Headers["Idempotency-Key"]; lastPostPort = request.Url.Port;
                     }
+                    context.Response.Headers["X-ARWork-Receiver"] = source == "A" ? new string('a',32) : new string('b',32);
                     if (request.Url.AbsolutePath == "/api/receiver") body = "{\"data\":{\"id\":\"" + (source == "A" ? new string('a',32) : new string('b',32)) + "\",\"name\":\"Fixture " + source + "\",\"protocol\":1,\"port\":" + request.Url.Port + "}}";
                     if (request.Url.AbsolutePath == "/health") body = "{\"data\":{\"status\":\"ok\"}}";
-                    if (responseMode == 1 && request.Url.AbsolutePath == "/api/issues") body = "{\"data\":[]}";
+                    if ((responseMode == 1 || responseMode == 3) && request.Url.AbsolutePath == "/api/issues") body = "{\"data\":[],\"deletedIds\":[\"same-id\"]}";
+                    if (responseMode == 3) context.Response.Headers["X-ARWork-Receiver"] = new string('c',32);
                     if (responseMode == 2) context.Response.StatusCode = 500;
                     if (request.Url.AbsolutePath == "/api/events") context.Response.StatusCode = 404;
                     var bytes = Encoding.UTF8.GetBytes(body); context.Response.ContentType = "application/json";
@@ -288,6 +290,8 @@ public sealed class InspectionNavigationRunner : MonoBehaviour
         Check(history.IsRemarking,"deletion fixture opens restored remark");
         responseMode = 2; history.GetComponent<IssueLiveUpdates>().Refresh(); yield return new WaitForSecondsRealtime(1);
         Check(history.IsRemarking && remarkQueue.Get("restored-remark").state != "deleted", "disconnection does not infer deletion or destroy pending replacement");
+        responseMode = 3; history.GetComponent<IssueLiveUpdates>().Refresh(); yield return new WaitForSecondsRealtime(2);
+        Check(history.IsRemarking && remarkQueue.Get("restored-remark").body == frozenScene && localQueue.Get(localEntry.key).state == "synced", "another receiver occupying remembered address cannot scrub original destination history or remark");
         responseMode = 1; history.GetComponent<IssueLiveUpdates>().Refresh(); yield return new WaitForSecondsRealtime(3);
         Check(!history.IsRemarking && !probe.CameraActive && Field<string>(history,"selectedId") == null && !Field<GameObject>(history,"detailPage").activeSelf, "reconnect removes open deleted detail and exits remark without promoting anchor");
         Check(remarkQueue.Get("restored-remark").state == "deleted" && string.IsNullOrEmpty(remarkQueue.Get("restored-remark").body), "reconnect scrubs frozen replacement rather than retrying deleted issue");

@@ -163,12 +163,12 @@ public sealed class ReportQueue
         if (File.Exists(temporary)) File.Delete(temporary);
     }
 
-    public string[] Reconcile(string server, string[] existingIds)
+    public string[] ReconcileDeleted(string server, string[] deletedIds)
     {
         var removed = new System.Collections.Generic.List<string>();
         foreach (var entry in List(server)) {
             var id = IsRemarkEndpoint(entry.endpoint) ? entry.endpoint.Split('/')[3] : entry.serverId;
-            if (entry.state == "deleted" || string.IsNullOrEmpty(id) || existingIds.Contains(id)) continue;
+            if (entry.state == "deleted" || string.IsNullOrEmpty(id) || !deletedIds.Contains(id)) continue;
             Deleted(entry.key, id); removed.Add(id);
         }
         return removed.Distinct().ToArray();

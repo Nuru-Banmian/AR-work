@@ -47,6 +47,21 @@ func TestReceiverIdentityAndGuard(t *testing.T) {
 	if rejected.StatusCode != 409 {
 		t.Fatalf("wrong target was not rejected: %d", rejected.StatusCode)
 	}
+	for _, target := range []string{other.ID, second.ID} {
+		query, _ := http.NewRequest("GET", server.URL+"/api/issues", nil)
+		query.Header.Set("X-ARWork-Receiver", target)
+		result, err := http.DefaultClient.Do(query)
+		if err != nil {
+			t.Fatal(err)
+		}
+		result.Body.Close()
+		if result.Header.Get("X-ARWork-Receiver") != second.ID {
+			t.Fatal("query response identity missing")
+		}
+		if (target == second.ID && result.StatusCode != 200) || (target != second.ID && result.StatusCode != 409) {
+			t.Fatal("authoritative deletion query accepted wrong receiver")
+		}
+	}
 }
 func TestListenFallbackOwnsActualPort(t *testing.T) {
 	occupied, err := net.Listen("tcp", "127.0.0.1:0")

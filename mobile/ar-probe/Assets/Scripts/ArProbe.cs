@@ -427,14 +427,14 @@ public sealed class ArProbe : MonoBehaviour
         savedMarkers.Remove(key); markerStatuses.Remove(key);
     }
 
-    public void ReconcileIssueMarkers(string server, string[] ids)
+    public void RemoveDeletedIssueMarkers(string server, string[] ids)
     {
         var keys = new HashSet<string>(savedMarkers.Keys);
         keys.UnionWith(markerStatuses.Keys);
         foreach (var key in keys) {
             if (!key.StartsWith(server + "/", System.StringComparison.Ordinal)) continue;
             var id = key.Substring(server.Length + 1);
-            if (!id.StartsWith("local-", System.StringComparison.Ordinal) && System.Array.IndexOf(ids, id) < 0)
+            if (!id.StartsWith("local-", System.StringComparison.Ordinal) && System.Array.IndexOf(ids, id) >= 0)
                 RetireIssueMarker(server, id);
         }
     }

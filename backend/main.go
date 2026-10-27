@@ -132,8 +132,9 @@ func (a *api) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		w.Header().Set("Access-Control-Allow-Origin", origin)
+		w.Header().Set("Access-Control-Expose-Headers", "X-ARWork-Receiver")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Idempotency-Key")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Idempotency-Key, X-ARWork-Receiver")
 	}
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusNoContent)
@@ -159,6 +160,11 @@ func (a *api) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		case "GET":
 			a.mu.Lock()
 			issues := append([]Issue{}, a.issues...)
+			deletedIds := make([]string, 0, len(a.deleted))
+			for id := range a.deleted {
+				deletedIds = append(deletedIds, id)
+			}
+			sort.Strings(deletedIds)
 			a.mu.Unlock()
 			sort.Slice(issues, func(i, j int) bool {
 				if issues[i].CreatedAt.Equal(issues[j].CreatedAt) {
@@ -166,7 +172,7 @@ func (a *api) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				}
 				return issues[i].CreatedAt.After(issues[j].CreatedAt)
 			})
-			respond(w, 200, map[string]any{"data": issues})
+			respond(w, 200, map[string]any{"data": issues, "deletedIds": deletedIds})
 		case "POST":
 			a.create(w, r)
 		default:

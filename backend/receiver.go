@@ -67,6 +67,7 @@ func loadReceiver(path, name string) (Receiver, error) {
 }
 func receiverHandler(next http.Handler, receiver Receiver) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-ARWork-Receiver", receiver.ID)
 		// Guard before reading any request bytes. Older clients without this header remain supported.
 		if target := r.Header.Get("X-ARWork-Receiver"); target != "" && target != receiver.ID {
 			fail(w, 409, "receiver_mismatch", "Receiver identity changed; request was not accepted")

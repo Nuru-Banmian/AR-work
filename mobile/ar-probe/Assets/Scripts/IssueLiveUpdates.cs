@@ -12,7 +12,7 @@ using UnityEngine.UI;
 // main thread, including while Android is pausing its native download callbacks.
 public sealed class IssueLiveUpdates : MonoBehaviour
 {
-    [Serializable] private sealed class IssueList { public IssueHistoryPanel.Issue[] data; }
+    [Serializable] private sealed class IssueList { public IssueHistoryPanel.Issue[] data; public string[] deletedIds; }
 
     private sealed class EventConnection
     {
@@ -136,18 +136,19 @@ public sealed class IssueLiveUpdates : MonoBehaviour
         int started = generation; string address = server;
         using (var request = UnityWebRequest.Get(address + "/api/issues"))
         {
-            request.timeout = 15;
+            request.timeout = 15; history.GuardRead(request);
             yield return request.SendWebRequest();
             if (started == generation && !paused)
             {
                 bool applied = false;
-                if (request.result == UnityWebRequest.Result.Success && history.CanApplyLive)
+                if (request.result == UnityWebRequest.Result.Success && history.AcceptRead(request) && history.CanApplyLive)
                 {
                     try
                     {
-                        var issues = JsonUtility.FromJson<IssueList>(request.downloadHandler.text)?.data;
+                        var snapshot = JsonUtility.FromJson<IssueList>(request.downloadHandler.text);
+                        var issues = snapshot?.data;
                         if (issues == null) throw new ArgumentException("Missing issues");
-                        history.ApplyLiveIssues(address, issues);
+                        history.ApplyLiveIssues(address, issues, history.VerifiedRead(request) ? snapshot.deletedIds : null);
                         foreach (var issue in issues) probe.UpdateMarkerStatus(address, issue.id, issue.status);
                         SetState(connected ? "已连接" : "连接中断，正在重连，可手动刷新");
                         applied = true;

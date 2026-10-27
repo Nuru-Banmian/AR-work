@@ -96,10 +96,12 @@ public sealed class LocalReports : MonoBehaviour
         nextAttempt = 0;
     }
 
-    public void Reconcile(string address, string[] existingIds)
+    public string ReceiverIdentity(string address) => queue?.ReceiverAt(address);
+
+    public void ReconcileDeleted(string address, string[] deletedIds)
     {
         if (failure != null) throw new IOException(failure);
-        queue.Reconcile(address, existingIds);
+        queue.ReconcileDeleted(address, deletedIds);
         foreach (var entry in queue.List(address).Where(item => item.state == "deleted")) {
             GetComponent<ArProbe>()?.RetireIssueMarker(address, entry.serverId);
             GetComponent<ArProbe>()?.RetireIssueMarker(address, "local-" + entry.key);

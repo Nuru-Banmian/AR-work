@@ -123,7 +123,9 @@ public static class ReceiverQueueChecks
             queue.Add(moved.Address,"/api/issues/gone-history/position",remarkBody,"pending-remark",true);
             queue.RememberReceiver(other.Address,B);
             queue.Add(other.Address,"/api/reports",body,"other-receiver",true);
-            queue.Reconcile(moved.Address,new[] {"saved"});
+            queue.ReconcileDeleted(moved.Address,new string[0]);
+            Check(queue.Get("synced-history").state == "synced" && queue.Get("pending-remark").body == remarkBody, "stale list captured before creation cannot infer deletion of a new acknowledgement");
+            queue.ReconcileDeleted(moved.Address,new[] {"gone-history"});
             queue = new ReportQueue(Path.Combine(root,"delete-http"));
             Check(queue.Get("synced-history").state == "deleted" && queue.Get("pending-remark").state == "deleted", "full snapshot removes merged history and pending replacement after restart");
             Check(queue.Get("keep-pending").body == body && queue.Get("other-receiver").body == body, "deletion preserves unknown pending creation and other receiver queue");

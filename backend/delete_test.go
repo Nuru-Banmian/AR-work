@@ -51,6 +51,9 @@ func TestDeleteRetiresCompleteSceneAndReplayAfterRestart(t *testing.T) {
 		}
 	}
 	_, list := request(t, s.URL, "GET", "/api/issues", "")
+	if !strings.Contains(string(list["deletedIds"]), issue.ID) {
+		t.Fatal("full query omitted authoritative deleted identity")
+	}
 	if string(list["data"]) != "[]" {
 		t.Fatal("deleted issue returned")
 	}

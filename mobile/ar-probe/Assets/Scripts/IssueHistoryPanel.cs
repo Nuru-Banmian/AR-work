@@ -18,7 +18,7 @@ public sealed class IssueHistoryPanel : MonoBehaviour
         public Position position;
     }
     [Serializable] private sealed class IssueResult { public Issue data; public bool replacementCurrent; }
-    [Serializable] private sealed class IssueList { public Issue[] data; }
+    [Serializable] private sealed class IssueList { public Issue[] data; public string[] deletedIds; }
     [Serializable] private sealed class Content { public string title, description, priority; }
     private ReportQueue remarkQueue;
     private ReportQueueSender remarkSender;
@@ -258,10 +258,10 @@ public sealed class IssueHistoryPanel : MonoBehaviour
         using (var request = UnityWebRequest.Get(Endpoint))
         {
             loadRequest = request;
-            request.timeout = 15;
+            request.timeout = 15; GuardRead(request);
             yield return request.SendWebRequest();
-            if (request.result != UnityWebRequest.Result.Success) {
-                if (request.responseCode == 410 && selectedId != null) {
+            if (request.result != UnityWebRequest.Result.Success || !AcceptRead(request)) {
+                if (request.responseCode == 410 && VerifiedRead(request) && selectedId != null) {
                     RemoveDeletedSelection();
                     loadRequest = null; loading = false; SetBusy(false);
                     GetComponent<IssueLiveUpdates>()?.Refresh(); yield break;
@@ -275,9 +275,10 @@ public sealed class IssueHistoryPanel : MonoBehaviour
                 {
                     if (selectedId == null)
                     {
-                        var issues = JsonUtility.FromJson<IssueList>(request.downloadHandler.text)?.data;
+                        var snapshot = JsonUtility.FromJson<IssueList>(request.downloadHandler.text);
+                        var issues = snapshot?.data;
                         if (issues == null) throw new ArgumentException("Missing issue list");
-                        ReconcileSnapshot(server, issues);
+                        ReconcileSnapshot(server, issues, VerifiedRead(request) ? snapshot.deletedIds : null);
                         MarkSynced();
                         RenderList(issues);
                         message.text = (deletionNotice ? "问题已被永久删除，相关本地记录与现场标记已移除。\n" : "") + (issues.Length == 0 ? "暂无服务器问题，本地记录见列表。" : "共 " + issues.Length + " 个问题，点击查看详情。");
@@ -326,10 +327,10 @@ public sealed class IssueHistoryPanel : MonoBehaviour
         foreach (var button in rows.GetComponentsInChildren<Button>()) button.interactable = !busy;
     }
 
-    public void ApplyLiveIssues(string address, Issue[] issues)
+    public void ApplyLiveIssues(string address, Issue[] issues, string[] deletedIds = null)
     {
         if (address != server || busy) return;
-        ReconcileSnapshot(address, issues);
+        ReconcileSnapshot(address, issues, deletedIds);
         if (!IsOpen) return;
         KeepDraft();
         MarkSynced();
@@ -347,20 +348,30 @@ public sealed class IssueHistoryPanel : MonoBehaviour
         if (!IsRemarking) SetBusy(false);
     }
 
-    private bool ReconcileSnapshot(string address, Issue[] issues)
+    private string ExpectedReceiver => receiverScope != server ? receiverScope : GetComponent<LocalReports>()?.ReceiverIdentity(server);
+    public void GuardRead(UnityWebRequest request)
+    {
+        request.redirectLimit = 0;
+        if (!string.IsNullOrEmpty(ExpectedReceiver)) request.SetRequestHeader("X-ARWork-Receiver", ExpectedReceiver);
+    }
+    public bool AcceptRead(UnityWebRequest request) => string.IsNullOrEmpty(ExpectedReceiver) || VerifiedRead(request);
+    public bool VerifiedRead(UnityWebRequest request) => !string.IsNullOrEmpty(ExpectedReceiver) && request.GetResponseHeader("X-ARWork-Receiver") == ExpectedReceiver;
+
+    private bool ReconcileSnapshot(string address, Issue[] issues, string[] deletedIds)
     {
         if (issues.Any(issue => issue == null || string.IsNullOrEmpty(issue.id)) || issues.Select(issue => issue.id).Distinct().Count() != issues.Length)
             throw new ArgumentException("Invalid full issue snapshot; local records retained");
-        var ids = issues.Select(issue => issue.id).ToArray();
-        GetComponent<LocalReports>()?.Reconcile(address, ids);
+        var ids = deletedIds ?? new string[0];
+        if (ids.Any(string.IsNullOrEmpty)) throw new ArgumentException("Invalid deleted IDs");
+        GetComponent<LocalReports>()?.ReconcileDeleted(address, ids);
         var replacements = new ReportQueue(Path.Combine(Application.persistentDataPath, "remark-queue-v1"));
         if (receiverScope != address) replacements.RememberReceiver(address, receiverScope);
-        replacements.Reconcile(address, ids);
-        bool deleted = remoteRows.Any(issue => !ids.Contains(issue.id)) || (selectedId != null && !ids.Contains(selectedId));
-        if (selectedId != null && !ids.Contains(selectedId)) RemoveDeletedSelection();
-        foreach (var key in drafts.Keys.Where(key => key.StartsWith(receiverScope + "/", StringComparison.Ordinal) && !ids.Contains(key.Substring(receiverScope.Length + 1))).ToArray())
+        replacements.ReconcileDeleted(address, ids);
+        bool deleted = remoteRows.Any(issue => ids.Contains(issue.id)) || (selectedId != null && ids.Contains(selectedId));
+        if (selectedId != null && ids.Contains(selectedId)) RemoveDeletedSelection();
+        foreach (var key in drafts.Keys.Where(key => key.StartsWith(receiverScope + "/", StringComparison.Ordinal) && ids.Contains(key.Substring(receiverScope.Length + 1))).ToArray())
             drafts.Remove(key);
-        probe.ReconcileIssueMarkers(address, ids);
+        probe.RemoveDeletedIssueMarkers(address, ids);
         if (deleted) deletionNotice = true;
         return deleted;
     }
@@ -416,10 +427,10 @@ public sealed class IssueHistoryPanel : MonoBehaviour
         {
             request.uploadHandler = new UploadHandlerRaw(Encoding.UTF8.GetBytes(body));
             request.downloadHandler = new DownloadHandlerBuffer();
-            request.SetRequestHeader("Content-Type", "application/json"); request.timeout = 15;
+            request.SetRequestHeader("Content-Type", "application/json"); request.timeout = 15; GuardRead(request);
             yield return request.SendWebRequest();
-            if (request.result != UnityWebRequest.Result.Success) {
-                if (request.responseCode == 410) { SetBusy(false); RemoveDeletedSelection(); GetComponent<IssueLiveUpdates>()?.Refresh(); yield break; }
+            if (request.result != UnityWebRequest.Result.Success || !AcceptRead(request)) {
+                if (request.responseCode == 410 && VerifiedRead(request)) { SetBusy(false); RemoveDeletedSelection(); GetComponent<IssueLiveUpdates>()?.Refresh(); yield break; }
                 MarkSyncUnavailable(server);
                 message.text = InspectionUi.Error(request) + "结果待确认，草稿已保留。当前只读，请刷新核对后重试。";
             }
