@@ -26,16 +26,17 @@ type Position struct {
 }
 
 type Issue struct {
-	ModelURL    string    `json:"modelUrl,omitempty"`
-	SnapshotURL string    `json:"snapshotUrl,omitempty"`
-	ID          string    `json:"id"`
-	Title       string    `json:"title"`
-	Description string    `json:"description"`
-	Priority    string    `json:"priority"`
-	Status      string    `json:"status"`
-	Position    Position  `json:"position"`
-	CreatedAt   time.Time `json:"createdAt"`
-	UpdatedAt   time.Time `json:"updatedAt"`
+	SceneRevision string    `json:"sceneRevision,omitempty"`
+	ModelURL      string    `json:"modelUrl,omitempty"`
+	SnapshotURL   string    `json:"snapshotUrl,omitempty"`
+	ID            string    `json:"id"`
+	Title         string    `json:"title"`
+	Description   string    `json:"description"`
+	Priority      string    `json:"priority"`
+	Status        string    `json:"status"`
+	Position      Position  `json:"position"`
+	CreatedAt     time.Time `json:"createdAt"`
+	UpdatedAt     time.Time `json:"updatedAt"`
 }
 
 type api struct {
@@ -45,6 +46,7 @@ type api struct {
 	media       map[string][]byte
 	issues      []Issue
 	origins     map[string]bool
+	remarks     map[string]remarkReceipt
 	requests    map[string]creation
 	subscribers map[chan struct{}]bool
 }
@@ -60,10 +62,11 @@ type snapshot struct {
 	Media    map[string][]byte          `json:"media,omitempty"`
 	Issues   []Issue                    `json:"issues"`
 	Requests map[string]creation        `json:"requests"`
+	Remarks  map[string]remarkReceipt   `json:"remarks,omitempty"`
 }
 
 func newAPI(path, allowedOrigins string) (http.Handler, error) {
-	a := &api{models: map[string]json.RawMessage{}, media: map[string][]byte{}, path: path, issues: []Issue{}, origins: map[string]bool{}, requests: map[string]creation{}, subscribers: map[chan struct{}]bool{}}
+	a := &api{remarks: map[string]remarkReceipt{}, models: map[string]json.RawMessage{}, media: map[string][]byte{}, path: path, issues: []Issue{}, origins: map[string]bool{}, requests: map[string]creation{}, subscribers: map[chan struct{}]bool{}}
 	for _, origin := range strings.Split(allowedOrigins, ",") {
 		a.origins[strings.TrimSpace(origin)] = true
 	}
@@ -76,6 +79,9 @@ func newAPI(path, allowedOrigins string) (http.Handler, error) {
 			var stored snapshot
 			err = json.Unmarshal(data, &stored)
 			a.issues = stored.Issues
+			if stored.Remarks != nil {
+				a.remarks = stored.Remarks
+			}
 			if stored.Models != nil {
 				a.models = stored.Models
 			}
@@ -167,6 +173,10 @@ func (a *api) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *api) issue(w http.ResponseWriter, r *http.Request) {
+	if strings.HasSuffix(r.URL.Path, "/position") {
+		a.replacePosition(w, r)
+		return
+	}
 	if strings.HasSuffix(r.URL.Path, "/model") {
 		a.readModel(w, r)
 		return
@@ -232,67 +242,15 @@ func (a *api) issue(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	var replacement []byte
-	var location struct {
-		Snapshot string                      `json:"snapshot"`
-		Position *struct{ X, Y, Z *float64 } `json:"position"`
-	}
-	if position {
-		body, readErr := io.ReadAll(http.MaxBytesReader(w, r.Body, 12*1024*1024))
-		if readErr != nil {
-			fail(w, 400, "invalid_argument", "Request body is too large")
-			return
-		}
-		decoder := json.NewDecoder(bytes.NewReader(body))
-		decoder.DisallowUnknownFields()
-		if err := decoder.Decode(&location); err != nil {
-			fail(w, 400, "invalid_argument", "Body must contain position{x,y,z} only")
-			return
-		}
-		if err := decoder.Decode(new(any)); err != io.EOF {
-			fail(w, 400, "invalid_argument", "Body must contain one JSON object")
-			return
-		}
-		if location.Snapshot == "" && len(body) > 64*1024 {
-			fail(w, 400, "invalid_argument", "Position request without snapshot must be at most 64 KiB")
-			return
-		}
-		if location.Position == nil || location.Position.X == nil || location.Position.Y == nil || location.Position.Z == nil {
-			fail(w, 400, "invalid_argument", "position.x, position.y and position.z are required finite numbers")
-			return
-		}
-		for _, number := range []*float64{location.Position.X, location.Position.Y, location.Position.Z} {
-			if math.IsNaN(*number) || math.IsInf(*number, 0) {
-				fail(w, 400, "invalid_argument", "position coordinates must be finite numbers")
-				return
-			}
-		}
-	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	for index, issue := range a.issues {
 		if issue.ID != parts[0] {
 			continue
 		}
-		media := a.media
-		if position {
-			var err error
-			replacement, err = validateSnapshot(location.Snapshot, issue.SnapshotURL != "")
-			if err != nil {
-				fail(w, 400, "invalid_snapshot", err.Error())
-				return
-			}
-			if len(replacement) > 0 {
-				media = cloneMedia(a.media)
-				media[issue.ID] = replacement
-				issue.SnapshotURL = "/api/issues/" + issue.ID + "/snapshot"
-			}
-		}
-		if status || content || position {
+		if status || content {
 			if status {
 				issue.Status = input.Status
-			} else if position {
-				issue.Position = Position{*location.Position.X, *location.Position.Y, *location.Position.Z}
 			} else {
 				issue.Title = strings.TrimSpace(*edit.Title)
 				issue.Description = *edit.Description
@@ -301,13 +259,12 @@ func (a *api) issue(w http.ResponseWriter, r *http.Request) {
 			issue.UpdatedAt = time.Now().UTC()
 			next := append([]Issue{}, a.issues...)
 			next[index] = issue
-			if err := saveIssues(a.path, snapshot{Issues: next, Requests: a.requests, Media: media, Models: a.models}); err != nil {
+			if err := saveIssues(a.path, snapshot{Issues: next, Requests: a.requests, Media: a.media, Models: a.models, Remarks: a.remarks}); err != nil {
 				log.Printf("save issue: %v", err)
 				fail(w, 500, "storage_error", "Could not save issue; data was not changed")
 				return
 			}
 			a.issues = next
-			a.media = media
 			a.notifySaved()
 		}
 		respond(w, 200, map[string]any{"data": issue})
@@ -414,7 +371,16 @@ func (a *api) create(w http.ResponseWriter, r *http.Request) {
 		if previous.Fingerprint != fingerprint {
 			fail(w, 409, "idempotency_conflict", "This key was already used with different content")
 		} else {
-			respond(w, 200, map[string]any{"data": previous.Result})
+			result := previous.Result
+			// After a complete scene replacement, stable attachment URLs refer to
+			// the current scene. Do not combine them with an old creation position.
+			for _, current := range a.issues {
+				if current.ID == result.ID && current.SceneRevision != "" && current.ModelURL != "" {
+					result = current
+					break
+				}
+			}
+			respond(w, 200, map[string]any{"data": result})
 		}
 		return
 	}
@@ -434,7 +400,7 @@ func (a *api) create(w http.ResponseWriter, r *http.Request) {
 	if len(photo) > 0 {
 		nextMedia[issue.ID] = photo
 	}
-	if err := saveIssues(a.path, snapshot{Issues: next, Requests: nextRequests, Media: nextMedia, Models: nextModels}); err != nil {
+	if err := saveIssues(a.path, snapshot{Issues: next, Requests: nextRequests, Media: nextMedia, Models: nextModels, Remarks: a.remarks}); err != nil {
 		log.Printf("save issues: %v", err)
 		fail(w, 500, "storage_error", "Could not save issue; data was not changed")
 		return

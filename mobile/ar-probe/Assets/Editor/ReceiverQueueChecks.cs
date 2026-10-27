@@ -75,6 +75,26 @@ public static class ReceiverQueueChecks
             queue = new ReportQueue(Path.Combine(root, "model-http"));
             await new ReportQueueSender(queue).UploadNext(moved.Address, client);
             Check(queue.Get("model-http").state == "synced" && moved.Body == modelBody && moved.Key == "model-http", "restart retries model HTTP bytes and completes only full receipt");
+            queue = new ReportQueue(Path.Combine(root, "remark-http")); queue.RememberReceiver(moved.Address, A);
+            var scene = JsonUtility.FromJson<IssueScanModel>("{\"version\":1,\"vertices\":[0,0,0,1,0,0,0,1,0],\"colors\":[255,0,0,0,255,0,0,0,255],\"triangles\":[0,1,2],\"marker\":{\"position\":{\"x\":0.25,\"y\":0.25,\"z\":0},\"normal\":{\"x\":0,\"y\":0,\"z\":1}}}");
+            var remarkBody = RemarkPayload.Freeze(scene, "confirmed-photo", new Vector3(7,8,9));
+            queue.Add(moved.Address, "/api/issues/saved/position", remarkBody, "remark-http", true);
+            scene.vertices[0] = 99;
+            moved.DropReceipt = true;
+            await new ReportQueueSender(queue).UploadNext(moved.Address, client);
+            Check(queue.Get("remark-http").state == "failed" && moved.Method == "PATCH", "lost remark receipt retains original complete PATCH request");
+            queue = new ReportQueue(Path.Combine(root, "remark-http"));
+            Check(queue.Get("remark-http").body == remarkBody, "restart preserves model photo point and key independently of scan mutation");
+            moved.WrongId = true;
+            await new ReportQueueSender(queue).UploadNext(moved.Address, client);
+            Check(queue.Get("remark-http").state == "failed", "another issue receipt cannot acknowledge a remark");
+            moved.WrongId = false;
+            await new ReportQueueSender(queue).UploadNext(moved.Address, client);
+            Check(queue.Get("remark-http").state == "synced" && moved.Body == remarkBody && moved.Key == "remark-http", "same frozen replacement is acknowledged after process reconstruction");
+            var retained = queue.Add(moved.Address, "/api/reports", body, "unrelated", true);
+            queue.ForgetSynced(moved.Address, "saved");
+            Check(queue.List(moved.Address).Length == 1 && queue.Get(retained.key).body == body, "retiring old acknowledged copies preserves unrelated pending data");
+
 
         }
     }
@@ -83,9 +103,9 @@ public static class ReceiverQueueChecks
         private readonly HttpListener listener = new HttpListener();
         public readonly string Address;
         public volatile string Identity;
-        public volatile bool Fail, LegacyService, IncludeModel;
+        public volatile bool Fail, LegacyService, IncludeModel, DropReceipt, WrongId;
         public volatile int Posts;
-        public string Body, Key, Target;
+        public string Body, Key, Target, Method;
         public TaskCompletionSource<bool> HandshakeStarted, ReleaseHandshake;
         public Fixture(int port, string id)
         {
@@ -97,11 +117,14 @@ public static class ReceiverQueueChecks
                         var context = await listener.GetContextAsync();
                         var request = context.Request;
                         string response;
-                        if (request.HttpMethod == "POST") {
+                        if (request.HttpMethod == "POST" || request.HttpMethod == "PATCH") {
+                            Method = request.HttpMethod;
                             Posts++; Body = new StreamReader(request.InputStream).ReadToEnd(); Key = request.Headers["Idempotency-Key"]; Target = request.Headers["X-ARWork-Receiver"];
                             context.Response.StatusCode = Fail ? 500 : 201;
                             response = "{\"data\":{\"id\":\"saved\",\"position\":{\"x\":0,\"y\":0,\"z\":0},\"snapshotUrl\":\"/snapshot\"}}";
                             if (IncludeModel) response = response.Replace("\"snapshotUrl\"", "\"modelUrl\":\"/model\",\"snapshotUrl\"");
+                            if (WrongId) response = response.Replace("saved", "another");
+                            if (DropReceipt) { DropReceipt = false; context.Response.Abort(); continue; }
                         } else response = LegacyService ? "{\"data\":{\"status\":\"ok\"}}" : "{\"data\":{\"id\":\"" + Identity + "\",\"name\":\"fixture\",\"protocol\":1,\"port\":" + port + "}}";
                         if (request.Url.AbsolutePath == "/api/receiver" && ReleaseHandshake != null) {
                             HandshakeStarted.SetResult(true); await ReleaseHandshake.Task; ReleaseHandshake = null;

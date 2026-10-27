@@ -2,6 +2,9 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Text;
+using System.IO;
+using System.Linq;
+using System.Net.Http;
 using UnityEngine;
 using UnityEngine.Networking;
 using UnityEngine.UI;
@@ -11,13 +14,18 @@ public sealed class IssueHistoryPanel : MonoBehaviour
 {
     [Serializable] public sealed class Position { public float x, y, z; }
     [Serializable] public sealed class Issue {
-        public string id, title, description, priority, status, createdAt, updatedAt, snapshotUrl, modelUrl;
+        public string id, title, description, priority, status, createdAt, updatedAt, snapshotUrl, modelUrl, sceneRevision;
         public Position position;
     }
-    [Serializable] private sealed class IssueResult { public Issue data; }
+    [Serializable] private sealed class IssueResult { public Issue data; public bool replacementCurrent; }
     [Serializable] private sealed class IssueList { public Issue[] data; }
     [Serializable] private sealed class Content { public string title, description, priority; }
-    [Serializable] private sealed class Location { public Position position; public string snapshot; }
+    private ReportQueue remarkQueue;
+    private ReportQueueSender remarkSender;
+    private readonly HttpClient remarkClient = ReceiverDiscovery.CreateClient(30);
+    private string remarkKey;
+    private bool frozenRemark;
+    private string RemarkEndpoint => "/api/issues/" + selectedId + "/position";
 
     public bool IsOpen => IsRemarking || (panel != null && panel.activeSelf);
     public bool IsRemarking { get; private set; }
@@ -25,7 +33,7 @@ public sealed class IssueHistoryPanel : MonoBehaviour
     private bool loading;
     private Coroutine loadRoutine;
     private UnityWebRequest loadRequest;
-    public bool RemarkLocked => busy || snapshotReady;
+    public bool RemarkLocked => busy || snapshotReady || frozenRemark;
     private bool snapshotReady;
     private ArProbe probe;
     private GameObject remarkPanel;
@@ -386,10 +394,20 @@ public sealed class IssueHistoryPanel : MonoBehaviour
     private void BeginRemark()
     {
         if (busy || !detailLoaded || selectedId == null || !online) return;
-        KeepDraft(); probe.BeginRemark(); probe.EnterCamera(); hasRemarkPosition = false; snapshotReady = false; IsRemarking = true;
+        try {
+            remarkQueue = new ReportQueue(Path.Combine(Application.persistentDataPath, "remark-queue-v1"));
+            if (receiverScope != server) remarkQueue.RememberReceiver(server, receiverScope);
+            var pending = remarkQueue.List(server).FirstOrDefault(entry => entry.endpoint == RemarkEndpoint);
+            remarkKey = pending?.key; frozenRemark = pending != null;
+            remarkSender = new ReportQueueSender(remarkQueue);
+        } catch (Exception error) { message.text = "重新标记草稿读取失败，请保留应用数据。"; Debug.LogException(error); return; }
+        KeepDraft(); probe.BeginRemark();
+        if (!frozenRemark) probe.EnterCamera();
+        hasRemarkPosition = frozenRemark; snapshotReady = frozenRemark; IsRemarking = true;
         GetComponent<IssueReportForm>().ShowRemarkNavigation(true);
         panel.SetActive(false); remarkPanel.SetActive(true); SetBusy(false);
-        remarkMessage.text = "请先扫描并暂停，再点击实物重新选点。保存成功后才替换原标记。";
+        confirmRemark.GetComponentInChildren<Text>().text = frozenRemark ? "重试原资料" : "快照 / 下一步";
+        remarkMessage.text = frozenRemark ? "发现已冻结的替换资料。重试沿用原模型、照片与请求编号；不会重新扫描或改写原请求。" : "请先扫描并暂停，再点击实物重新选点。保存成功后才替换原标记。";
     }
 
     public void MarkPositionSelected()
@@ -410,7 +428,8 @@ public sealed class IssueHistoryPanel : MonoBehaviour
         probe.FinishRemark(saved, server, selectedId); probe.LeaveCamera(); IsRemarking = false; snapshotReady = false;
         GetComponent<IssueReportForm>().ShowRemarkNavigation(false);
         hasRemarkPosition = false; remarkPanel.SetActive(false); panel.SetActive(true);
-        if (!saved) message.text = "已取消本次选点，原标记保留。请刷新核对已保存的位置。";
+        if (!saved) message.text = frozenRemark ? "已停止重试，原请求保留；结果可能已保存，请刷新核对，再进入重新标记可继续核对回执。" : "已取消本次选点，原标记保留。远端资料未修改。";
+        frozenRemark = false; remarkKey = null;
     }
 
     private IEnumerator SavePosition()
@@ -425,37 +444,50 @@ public sealed class IssueHistoryPanel : MonoBehaviour
             });
             yield break;
         }
-        if (UnityEngine.XR.ARFoundation.ARSession.state != UnityEngine.XR.ARFoundation.ARSessionState.SessionTracking || !probe.HasTrackedDraft)
-        { remarkMessage.text = "定位暂不可用，请重新扫描后保存。"; yield break; }
-        var point = probe.CurrentPosition;
-        var body = JsonUtility.ToJson(new Location { snapshot = GetComponent<IssueReportForm>().ConfirmedSnapshot, position = new Position { x = point.x, y = point.y, z = point.z } });
-        bool succeeded = false;
-        SetBusy(true); remarkMessage.text = "正在保存位置…";
-        using (var request = new UnityWebRequest(Endpoint + "/position", "PATCH"))
+        if (!frozenRemark)
         {
-            request.uploadHandler = new UploadHandlerRaw(Encoding.UTF8.GetBytes(body));
-            request.downloadHandler = new DownloadHandlerBuffer();
-            request.SetRequestHeader("Content-Type", "application/json"); request.timeout = 15;
-            yield return request.SendWebRequest();
-            if (request.result != UnityWebRequest.Result.Success)
-                remarkMessage.text = InspectionUi.Error(request) + "新位置仍为草稿，可重试；也可取消后刷新核对，结果可能已经保存。";
-            else
-            {
-                try
-                {
-                    var issue = JsonUtility.FromJson<IssueResult>(request.downloadHandler.text)?.data;
-                    RequireIssue(issue);
-                    if (issue.position.x != point.x || issue.position.y != point.y || issue.position.z != point.z)
-                        throw new ArgumentException("Position mismatch");
-                    RenderDetail(issue); succeeded = true;
-                    message.text = "位置已保存 · " + InspectionUi.Status(issue.status) + "。内容草稿已保留。";
-                    Debug.Log("ARWORK_REMARK_SAVED_ID=" + issue.id);
-                }
-                catch (ArgumentException) { remarkMessage.text = "结果尚未确认，新位置仍为草稿。请重试，或取消后刷新核对。"; }
-            }
+            if (UnityEngine.XR.ARFoundation.ARSession.state != UnityEngine.XR.ARFoundation.ARSessionState.SessionTracking || !probe.HasTrackedDraft)
+            { remarkMessage.text = "定位暂不可用，请重新扫描后保存。"; yield break; }
+            try {
+                var point = probe.CurrentPosition;
+                var body = RemarkPayload.Freeze(probe.FreezeIssueModel(), GetComponent<IssueReportForm>().ConfirmedSnapshot, point);
+                // Durable complete scene and key precede even the receiver handshake.
+                var entry = remarkQueue.Add(server, RemarkEndpoint, body, frozen: true,
+                    receiverIdentity: receiverScope == server ? null : receiverScope);
+                remarkKey = entry.key; frozenRemark = true;
+            } catch (Exception error) { remarkMessage.text = "本地替换资料保存失败，原资料不变，可重试。" + error.Message; yield break; }
         }
+        bool succeeded = false, current = false;
+        SetBusy(true); remarkMessage.text = "正在核对接收端并传送完整替换资料，等待持久保存回执…";
+        var upload = remarkSender.UploadNext(server, remarkClient, remarkKey);
+        while (!upload.IsCompleted) yield return null;
+        try {
+            if (upload.IsFaulted || upload.IsCanceled) throw new IOException("替换回执未确认", upload.Exception);
+            var entry = remarkQueue.Get(remarkKey);
+            if (entry.state != "synced") throw new IOException(entry.error);
+            var result = JsonUtility.FromJson<IssueResult>(entry.receipt);
+            RequireIssue(result?.data);
+            // Clean acknowledged phone history copies only after receiver success.
+            GetComponent<LocalReports>()?.RetireSyncedScene(server, selectedId);
+            current = result.replacementCurrent;
+            // A restored request has no current-session anchor to promote.
+            if (current && probe.HasTrackedDraft) {
+                var point = probe.CurrentPosition;
+                current = result.data.position.x == point.x && result.data.position.y == point.y && result.data.position.z == point.z;
+            } else current = false;
+            MarkSynced(); RenderDetail(result.data);
+            remarkQueue.ForgetSynced(server, selectedId);
+            succeeded = true;
+            Debug.Log("ARWORK_REMARK_SAVED_ID=" + selectedId);
+        } catch (Exception error) { remarkMessage.text = "替换结果未确认，原正文和请求编号已保留。可重试或返回后刷新核对。" + error.Message; }
         SetBusy(false);
-        if (succeeded) EndRemark(true);
+        if (succeeded) {
+            EndRemark(current);
+            if (!current) probe.RetireIssueMarker(server, selectedId);
+            message.text = "完整替换回执已确认。" + (current ? "新标记已保存。" : "已显示服务器最新资料；重启或较新替换使当前会话无可恢复的新标记。") + "内容草稿已保留。";
+            GetComponent<IssueLiveUpdates>()?.Refresh();
+        }
     }
 
+    private void OnDestroy() { remarkClient.Dispose(); }
 }

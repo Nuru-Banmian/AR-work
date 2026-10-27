@@ -420,6 +420,13 @@ public sealed class ArProbe : MonoBehaviour
         SetMarkerColor(anchor.GetComponentInChildren<Renderer>(), color);
     }
 
+    public void RetireIssueMarker(string server, string id)
+    {
+        var key = server + "/" + id;
+        if (savedMarkers.TryGetValue(key, out var anchor) && anchor != null) Destroy(anchor.gameObject);
+        savedMarkers.Remove(key); markerStatuses.Remove(key);
+    }
+
     public void BeginRemark()
     {
         suspendedMarker = marker; suspendedAnchor = markerAnchor; suspendedPosition = lastPosition;

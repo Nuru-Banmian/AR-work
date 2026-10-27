@@ -133,13 +133,28 @@ public sealed class ReportQueue
         return entry;
     }
 
+    public static bool IsRemarkEndpoint(string endpoint)
+    {
+        const string prefix = "/api/issues/", suffix = "/position";
+        if (endpoint == null || !endpoint.StartsWith(prefix, StringComparison.Ordinal) || !endpoint.EndsWith(suffix, StringComparison.Ordinal)) return false;
+        var id = endpoint.Substring(prefix.Length, endpoint.Length - prefix.Length - suffix.Length);
+        return id.Length > 0 && id.All(c => char.IsLetterOrDigit(c) || c == '-');
+    }
+
+    // Only acknowledged copies are disposable; pending reports must never be removed.
+    public void ForgetSynced(string server, string issueId)
+    {
+        foreach (var entry in List(server).Where(item => item.state == "synced" && item.serverId == issueId))
+            File.Delete(PathFor(entry.key));
+    }
+
     private static void Validate(Entry entry)
     {
         if (entry == null || entry.version != 1 || string.IsNullOrEmpty(entry.body) ||
             !Uri.TryCreate(entry.server, UriKind.Absolute, out var uri) ||
             (uri.Scheme != "http" && uri.Scheme != "https") || uri.AbsolutePath != "/" ||
             !string.IsNullOrEmpty(uri.Query) || !string.IsNullOrEmpty(uri.Fragment) || !string.IsNullOrEmpty(uri.UserInfo) ||
-            (entry.endpoint != "/api/reports" && entry.endpoint != "/api/issues") ||
+            (entry.endpoint != "/api/reports" && entry.endpoint != "/api/issues" && !IsRemarkEndpoint(entry.endpoint)) ||
             (entry.state != "pending" && entry.state != "uploading" && entry.state != "failed" && entry.state != "synced") ||
             (entry.state == "synced" && (string.IsNullOrEmpty(entry.serverId) || string.IsNullOrEmpty(entry.receipt))))
             throw new InvalidDataException("Invalid local report; preserve application data");

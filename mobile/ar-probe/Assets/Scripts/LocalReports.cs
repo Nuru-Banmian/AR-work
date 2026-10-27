@@ -82,6 +82,13 @@ public sealed class LocalReports : MonoBehaviour
         nextAttempt = Time.realtimeSinceStartup + 1; changed(); return entry;
     }
 
+    public void RetireSyncedScene(string address, string issueId)
+    {
+        if (failure != null) throw new IOException(failure);
+        queue.ForgetSynced(address, issueId);
+        changed();
+    }
+
     public void RememberReceiver(string address, string id)
     {
         if (failure != null) throw new IOException(failure);
@@ -96,6 +103,10 @@ public sealed class LocalReports : MonoBehaviour
             label.gameObject.AddComponent<LayoutElement>().preferredHeight = 100; return;
         }
         try {
+            // A creation receipt may arrive after a remark. Query convergence also
+            // retires that late acknowledged copy; unrelated pending data stays intact.
+            foreach (var issue in remote.Where(item => !string.IsNullOrEmpty(item.sceneRevision)))
+                queue.ForgetSynced(server(), issue.id);
             foreach (var entry in queue.List(server())) {
                 if (entry.state == "synced" && remote.Any(issue => issue.id == entry.serverId)) continue;
                 var payload = JsonUtility.FromJson<ReportPayload>(entry.body);
