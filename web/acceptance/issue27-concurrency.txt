@@ -17,6 +17,7 @@ async (page) => {
  release()
  await page.getByRole('button',{name:'保存内容',exact:true}).waitFor({state:'visible'})
  await page.waitForFunction(()=>!Array.from(document.querySelectorAll('button')).find(button=>button.textContent==='保存内容')?.disabled)
+ await page.getByRole('alert').filter({hasText:'保存失败'}).waitFor()
  await page.unroute('**/content')
  check(await page.getByLabel('照明故障 标题',{exact:true}).inputValue()==='保存失败保留草稿','failed pending save retains draft')
  for(const width of [1024,1366,1920]) {

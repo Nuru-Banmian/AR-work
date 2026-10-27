@@ -2,6 +2,7 @@ async (page) => {
  const check=(condition,message)=>{if(!condition)throw new Error(message)}
  const base='http://127.0.0.1:5197'
  const issues=(await (await page.request.get(base+'/api/issues')).json()).data
+ check(issues.length===3 && issues.every(issue=>['阀门漏水 草稿','照明故障','护栏修复'].includes(issue.title)),'dedicated demo records required')
  const light=issues.find(issue=>issue.title==='照明故障')
  const rail=issues.find(issue=>issue.title==='护栏修复')
  await page.route('**/snapshot?*',route=>route.fulfill({status:503,body:'unavailable'}))
@@ -82,7 +83,7 @@ async (page) => {
  await page.getByRole('button',{name:'连接并刷新',exact:true}).waitFor()
  check(await page.getByRole('alert').count()===0,'list retry')
  // Remove only the isolated demo records through their real DELETE interface.
- for(const issue of (await (await page.request.get(base+'/api/issues')).json()).data) await page.request.delete(base+'/api/issues/'+issue.id,{data:{title:issue.title}})
+ for(const issue of [remaining,legacy]) await page.request.delete(base+'/api/issues/'+issue.id,{data:{title:issue.title}})
  await page.getByText('暂无问题。请先在手机上选点并提交，再点击刷新。',{exact:true}).waitFor()
  console.log('PASS photo/model failure retry, model controls and stale load, delete title/failure/Escape/success/remote draft cleanup, legacy, date sorting, list retry, empty data')
 }

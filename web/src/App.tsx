@@ -25,7 +25,7 @@ function Modal({ label, onClose, children, className = '' }: { label: string; on
   }}>{children}</dialog>
 }
 
-function IssueCard({ issue, address, draft, setDraft, clearSavedDraft, saving, beginOperation, endOperation, onSaved, onDeleted }: { issue: Issue; address: string; draft: Draft | null; setDraft: (draft: Draft | null) => void; clearSavedDraft: (saved: Draft) => void; saving: boolean; beginOperation: () => boolean; endOperation: () => void; onSaved: () => void; onDeleted: () => void }) {
+function IssueCard({ issue, address, draft, setDraft, clearSavedDraft, error, message, setError, setMessage, saving, beginOperation, endOperation, onSaved, onDeleted }: { issue: Issue; address: string; draft: Draft | null; setDraft: (draft: Draft | null) => void; clearSavedDraft: (saved: Draft) => void; error: string; message: string; setError: (value: string) => void; setMessage: (value: string) => void; saving: boolean; beginOperation: () => boolean; endOperation: () => void; onSaved: () => void; onDeleted: () => void }) {
   const [expanded, setExpanded] = useState(false)
   const [failedPhoto, setFailedPhoto] = useState('')
   const [imageRetry, setImageRetry] = useState(0)
@@ -47,8 +47,6 @@ function IssueCard({ issue, address, draft, setDraft, clearSavedDraft, saving, b
     } catch (reason) { setError(`保存失败：${errorMessage(reason)}。草稿已保留，可重试。`) }
     finally { endOperation() }
   }
-  const [message, setMessage] = useState('')
-  const [error, setError] = useState('')
 
   async function changeStatus(status: Issue['status']) {
     if (status === issue.status || !beginOperation()) return
@@ -114,6 +112,8 @@ function IssueCard({ issue, address, draft, setDraft, clearSavedDraft, saving, b
 export default function App() {
   const [address, setAddress] = useState(() => import.meta.env.VITE_ARWORK_API || window.location.origin)
   const [activeAddress, setActiveAddress] = useState(address)
+  const receiverInView = useRef(activeAddress)
+  useEffect(() => { receiverInView.current = activeAddress }, [activeAddress])
   const [revision, setRevision] = useState(0)
   const [issues, setIssues] = useState<Issue[]>([])
   const [loading, setLoading] = useState(true)
@@ -122,6 +122,7 @@ export default function App() {
   const [selected, setSelected] = useState<string | null>(null)
   const [drafts, setDrafts] = useState<Record<string, Draft>>({})
   const [pending, setPending] = useState<Record<string, boolean>>({})
+  const [feedback, setFeedback] = useState<Record<string, { error: string; message: string }>>({})
   const operations = useRef(new Set<string>())
   const [search, setSearch] = useState('')
   const [status, setStatus] = useState<Issue['status'] | ''>('')
@@ -137,12 +138,18 @@ export default function App() {
     return difference || a.id.localeCompare(b.id)
   })
   const current = issues.find(issue => issue.id === selected)
+  const currentKey = current ? `${activeAddress}/${current.id}` : ''
+  function updateFeedback(key: string, field: 'error' | 'message', value: string) {
+    setFeedback(previous => ({ ...previous, [key]: { error: previous[key]?.error || '', message: previous[key]?.message || '', [field]: value } }))
+  }
   function restoreFocus() {
     if (opener.current?.isConnected) opener.current.focus()
     else document.querySelector<HTMLInputElement>('input[type="search"]')?.focus()
   }
   function closeDetails() { setSelected(null); restoreFocus() }
   useEffect(() => { if (selected) closeButton.current?.focus() }, [selected])
+  const selectedInView = useRef(selected)
+  useEffect(() => { selectedInView.current = selected }, [selected])
   function forgetDraft(id: string) {
     setDrafts(previous => { const next = { ...previous }; delete next[`${activeAddress}/${id}`]; return next })
   }
@@ -168,11 +175,11 @@ export default function App() {
     const timeout = setTimeout(() => controller.abort(), 10000)
     listIssues(activeAddress, controller.signal)
       .then(data => { if (active) { setIssues(data); setError('')
+        if (selectedInView.current && !data.some(issue => issue.id === selectedInView.current)) {
+          setSelected(null); setNotice('当前问题已被删除，详情及草稿已清除'); restoreFocus()
+        }
         setDrafts(previous => Object.fromEntries(Object.entries(previous).filter(([key]) => !key.startsWith(`${activeAddress}/`) || data.some(issue => key === `${activeAddress}/${issue.id}`))))
-        setSelected(previous => {
-          if (previous && !data.some(issue => issue.id === previous)) { setNotice('当前问题已被删除，详情及草稿已清除'); queueMicrotask(restoreFocus); return null }
-          return previous
-        }) } })
+ } })
       .catch((reason: unknown) => {
         if (active) {
           setError(`无法加载问题：${errorMessage(reason)}。正在重试…`)
@@ -199,9 +206,9 @@ export default function App() {
     }}>
       <label htmlFor="server">后端地址</label>
       <input id="server" value={address} onChange={event => setAddress(event.target.value)} required />
-      <button disabled={loading}>{loading ? '加载中…' : '连接并刷新'}</button>
+      <button disabled={loading && address === activeAddress}>{loading && address === activeAddress ? '加载中…' : '连接并刷新'}</button>
     </form>
-    <p role="status">{connection}</p>
+    <p className="receiver-status" role="status">接收端：{activeAddress} · {connection}</p>
     {error && <section role="alert"><strong>{error}</strong><p>确认 Go 服务已启动、地址正确且允许浏览器跨域访问。</p><button onClick={() => { setLoading(true); setError(''); setRevision(value => value + 1) }} disabled={loading}>重试</button></section>}
     {loading && <p role="status">正在加载问题…</p>}
     {notice && <p role="status">{notice}</p>}
@@ -231,18 +238,18 @@ export default function App() {
       {current && <aside className="details" aria-label="问题详情" onKeyDown={event => { if (event.key === 'Escape' && !(event.target as HTMLElement).closest('dialog')) { event.stopPropagation(); closeDetails() } }}>
         <div className="detail-heading"><h2>问题详情</h2><button ref={closeButton} onClick={closeDetails}>关闭详情</button></div>
         {!visible.some(issue => issue.id === current.id) && <p className="hint">当前问题不符合筛选，详情和草稿仍保留。</p>}
-        <IssueCard key={`${activeAddress}/${current.id}`} issue={current} address={activeAddress} draft={drafts[`${activeAddress}/${current.id}`] || null} saving={!!pending[`${activeAddress}/${current.id}`]} beginOperation={() => {
-          const key = `${activeAddress}/${current.id}`
+        <IssueCard key={currentKey} issue={current} address={activeAddress} draft={drafts[currentKey] || null} error={feedback[currentKey]?.error || ''} message={feedback[currentKey]?.message || ''} setError={value => updateFeedback(currentKey, 'error', value)} setMessage={value => updateFeedback(currentKey, 'message', value)} saving={!!pending[currentKey]} beginOperation={() => {
+          const key = currentKey
           if (operations.current.has(key)) return false
           operations.current.add(key); setPending(previous => ({ ...previous, [key]: true })); return true
         }} endOperation={() => {
-          const key = `${activeAddress}/${current.id}`
+          const key = currentKey
           operations.current.delete(key); setPending(previous => { const next = { ...previous }; delete next[key]; return next })
         }} clearSavedDraft={saved => setDrafts(previous => {
-          const key = `${activeAddress}/${current.id}`
+          const key = currentKey
           if (previous[key] !== saved) return previous
           const next = { ...previous }; delete next[key]; return next
-        })} setDraft={draft => { if (draft) setDrafts(previous => ({ ...previous, [`${activeAddress}/${current.id}`]: draft })); else forgetDraft(current.id) }} onSaved={() => setRevision(value => value + 1)} onDeleted={() => { forgetDraft(current.id); setIssues(previous => previous.filter(issue => issue.id !== current.id)); setSelected(previous => previous === current.id ? null : previous); setNotice('问题及关联附件已永久删除'); restoreFocus(); setRevision(value => value + 1) }} />
+        })} setDraft={draft => { if (draft) setDrafts(previous => ({ ...previous, [currentKey]: draft })); else forgetDraft(current.id) }} onSaved={() => setRevision(value => value + 1)} onDeleted={() => { forgetDraft(current.id); if (receiverInView.current !== activeAddress) return; setIssues(previous => previous.filter(issue => issue.id !== current.id)); setSelected(previous => previous === current.id ? null : previous); setNotice('问题及关联附件已永久删除'); restoreFocus(); setRevision(value => value + 1) }} />
       </aside>}
     </div>
   </main>

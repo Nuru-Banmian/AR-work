@@ -1,12 +1,11 @@
-main { max-width: 1100px; margin: auto; padding: 48px 24px; }
-header { margin-bottom: 32px; } h1 { font-size: 40px; margin: 8px 0; } h2 { overflow-wrap: anywhere; }
+main { max-width: 1680px; margin: auto; padding: 28px 32px; }
+header { margin-bottom: 20px; } h1 { font-size: 32px; margin: 8px 0; } h2 { overflow-wrap: anywhere; }
 .eyebrow { color: #256b61; letter-spacing: .12em; font-size: 13px; font-weight: 700; }
-.connection { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 28px; }
+.connection { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; }
 input { min-width: 260px; flex: 1; padding: 12px; border: 1px solid #aabbb6; border-radius: 8px; font: inherit; }
 button { padding: 12px 20px; background: #126451; color: white; border: 0; border-radius: 8px; font: inherit; cursor: pointer; }
 button:disabled { opacity: .6; cursor: wait; } button:focus-visible, input:focus-visible { outline: 3px solid #e59932; outline-offset: 3px; }
 [role=alert] { background: #ffebe6; border: 1px solid #bd6650; padding: 20px; border-radius: 12px; }
-.issues { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr)); gap: 20px; }
 article { background: white; border: 1px solid #d5dfdb; padding: 24px; border-radius: 14px; }
 article p { white-space: pre-wrap; overflow-wrap: anywhere; } .row { display: flex; justify-content: space-between; gap: 12px; font-size: 14px; }
 .priority { padding: 4px 10px; border-radius: 20px; background: #edf2ef; } .high { color: #9d321e; background: #ffe7df; } .medium { color: #775100; background: #fff2ce; }
@@ -27,9 +26,6 @@ textarea { resize: vertical; min-height: 100px; padding: 10px; font: inherit; }
 .delete-confirmation label { display: grid; gap: 8px; margin-bottom: 16px; }
 .delete-confirmation input { min-width: 0; }
 .delete-confirmation [role=alert] { color: #672b1f; }
-main { max-width: 1680px; padding: 28px 32px; }
-header { margin-bottom: 20px; } h1 { font-size: 32px; }
-.connection { margin-bottom: 8px; }
 .statistics { display: grid; grid-template-columns: repeat(4,1fr); gap: 14px; margin: 24px 0; }
 .statistics button { background: white; color: #31544a; border: 1px solid #cbdad3; display:flex; justify-content:space-between; align-items:center; text-align:left; padding:20px; }
 .statistics button[aria-pressed=true] { background:#126451; color:white; border-color:#126451; }

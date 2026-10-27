@@ -1,5 +1,4 @@
 import base64,json,struct,zlib,urllib.request,uuid
-from pathlib import Path
 # Seeds only the dedicated isolated Issue 27 receiver on port 18142.
 def png(rgb):
  def chunk(kind,data):return struct.pack('>I',len(data))+kind+data+struct.pack('>I',zlib.crc32(kind+data)&0xffffffff)
@@ -9,7 +8,6 @@ body={'reportVersion':2,'title':'永久删除验收','description':'同一 ID �
 
 for index,(title,description,priority,status) in enumerate([('阀门漏水','北区水管检查','high','open'),('照明故障','南区灯泡需更换','medium','in_progress'),('护栏修复','北区围栏已完成','low','resolved')]):
  body.update(title=title,description=description,priority=priority)
- if index==3: body.pop('model');body.pop('snapshot');body.pop('reportVersion')
  req=urllib.request.Request('http://127.0.0.1:18142/api/reports',json.dumps(body).encode(),{'Content-Type':'application/json','Idempotency-Key':f'issue27-{uuid.uuid4()}'})
  with urllib.request.urlopen(req) as r: issue=json.load(r)['data']
  if status!='open':

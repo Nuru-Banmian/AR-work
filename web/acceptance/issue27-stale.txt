@@ -1,0 +1,20 @@
+async (page) => {
+ const check=(condition,message)=>{if(!condition)throw new Error(message)}
+ let release
+ const gate=new Promise(resolve=>{release=resolve})
+ let arrived
+ const started=new Promise(resolve=>{arrived=resolve})
+ await page.route('http://127.0.0.1:5197/api/issues',async route=>{arrived();await gate;try{await route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({data:[]})})}catch{}})
+ await page.getByRole('button',{name:'连接并刷新',exact:true}).click()
+ await started
+ await page.getByRole('textbox',{name:'后端地址',exact:true}).fill('http://127.0.0.1:18142')
+ await page.getByRole('button',{name:'连接并刷新',exact:true}).click()
+ await page.getByRole('button',{name:'全部 3',exact:true}).waitFor()
+ release()
+ await page.unroute('http://127.0.0.1:5197/api/issues')
+ check(await page.getByRole('button',{name:/^查看 /}).count()===3,'old receiver list response ignored')
+ await page.getByRole('textbox',{name:'后端地址',exact:true}).fill('http://127.0.0.1:5197')
+ await page.getByRole('button',{name:'连接并刷新',exact:true}).click()
+ await page.getByRole('button',{name:'全部 3',exact:true}).waitFor()
+ console.log('PASS stale receiver list isolation')
+}
