@@ -36,7 +36,7 @@ public sealed class LocalReports : MonoBehaviour
             queue = new ReportQueue(Path.Combine(Application.persistentDataPath, "report-queue-v1"));
             queue.List(server()); // fail closed on corrupt data
             sender = new ReportQueueSender(queue);
-            client = ReceiverDiscovery.CreateClient(15);
+            client = ReceiverConnection.CreateClient(15);
         } catch (Exception error) { failure = "本地队列读取失败，请保留应用数据。"; Debug.LogException(error); }
         panel = new GameObject("本地问题详情", typeof(RectTransform), typeof(Image));
         panel.transform.SetParent(parent, false);

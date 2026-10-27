@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"testing"
 )
@@ -24,6 +25,8 @@ func TestReceiverIdentityAndGuard(t *testing.T) {
 		t.Fatal("different receivers share identity")
 	}
 	handler, _ := newAPI(filepath.Join(t.TempDir(), "issues.json"), "*")
+	second.Port = 18089
+	second.Addresses = []ReceiverAddress{{Interface: "LAN", Address: "http://192.168.1.8:18089"}}
 	server := httptest.NewServer(receiverHandler(handler, second))
 	defer server.Close()
 	response, err := http.Get(server.URL + "/api/receiver")
@@ -36,6 +39,15 @@ func TestReceiverIdentityAndGuard(t *testing.T) {
 	}
 	if err := json.NewDecoder(response.Body).Decode(&actual); err != nil || actual.Data.ID != first.ID || actual.Data.Protocol != 1 {
 		t.Fatalf("bad handshake: %+v %v", actual, err)
+	}
+	if actual.Data.Port != 18089 || actual.Data.Addresses == nil {
+		t.Fatalf("phone connection instructions missing actual API address: %+v", actual.Data)
+	}
+	for _, address := range actual.Data.Addresses {
+		parsed, err := url.Parse(address.Address)
+		if err != nil || parsed.Scheme != "http" || parsed.Port() != "18089" || parsed.Hostname() == "127.0.0.1" {
+			t.Fatalf("phone instructions use incorrect API port or loopback: %+v", address)
+		}
 	}
 	request, _ := http.NewRequest("POST", server.URL+"/api/reports", nil)
 	request.Header.Set("X-ARWork-Receiver", other.ID)

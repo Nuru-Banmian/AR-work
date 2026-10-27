@@ -119,6 +119,24 @@ export default function App() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [connection, setConnection] = useState('正在连接实时通知…')
+  const [phoneConnection, setPhoneConnection] = useState<{ name: string; port: number; addresses: { interface: string; address: string }[] } | null>(null)
+  const [phoneConnectionError, setPhoneConnectionError] = useState('')
+  const [phoneRevision, setPhoneRevision] = useState(0)
+  useEffect(() => {
+    const controller = new AbortController()
+    let active = true
+    const timer = setTimeout(() => controller.abort(), 10000)
+    fetch(`${serverAddress(activeAddress)}/api/receiver`, { signal: controller.signal })
+      .then(async response => {
+        if (!response.ok) throw new Error('接收端信息读取失败')
+        const result = await response.json()
+        if (!result.data || !Number.isInteger(result.data.port) || result.data.port < 1 || !Array.isArray(result.data.addresses) || !result.data.addresses.every((item: { address?: unknown; interface?: unknown } | null) => item && typeof item.address === 'string' && typeof item.interface === 'string')) throw new Error('接收端未返回手机连接地址')
+        if (!controller.signal.aborted) setPhoneConnection(result.data)
+      })
+      .catch(() => { if (active) setPhoneConnectionError('无法读取手机连接地址，请确认接收端已启动并重试。') })
+      .finally(() => clearTimeout(timer))
+    return () => { active = false; clearTimeout(timer); controller.abort() }
+  }, [activeAddress, phoneRevision])
   const [selected, setSelected] = useState<string | null>(null)
   const [drafts, setDrafts] = useState<Record<string, Draft>>({})
   const [pending, setPending] = useState<Record<string, boolean>>({})
@@ -200,6 +218,8 @@ export default function App() {
         setLoading(true)
         setError('')
         if (normalized !== activeAddress) { setSelected(null); setIssues([]); setConnection('正在连接实时通知…') }
+        setPhoneConnection(null); setPhoneConnectionError('')
+        setPhoneRevision(value => value + 1)
         setActiveAddress(normalized)
         setRevision(value => value + 1)
       } catch (reason) { setError(reason instanceof Error ? reason.message : '服务地址无效') }
@@ -208,6 +228,16 @@ export default function App() {
       <input id="server" value={address} onChange={event => setAddress(event.target.value)} required />
       <button disabled={loading && address === activeAddress}>{loading && address === activeAddress ? '加载中…' : '连接并刷新'}</button>
     </form>
+    <section className="phone-connection" aria-label="手机连接">
+      <h2>手机连接</h2>
+      {phoneConnection ? <>
+        <p>API 端口：<strong>{phoneConnection.port}</strong> · {phoneConnection.name}</p>
+        <p>手机和电脑连接同一局域网，在手机设置中输入下列完整地址，再点“连接并保存”。</p>
+        {phoneConnection.addresses.length ? <ul>{phoneConnection.addresses.map(item => <li key={item.address}><code>{item.address}</code> <small>{item.interface}</small></li>)}</ul> : <p>未找到局域网 IPv4 地址，请连接网络后刷新连接地址。</p>}
+        <p>多张网卡时选择与手机处于同一网段的地址；请使用这里的 API 端口，不要输入网页端口。</p>
+      </> : <p role="status">{phoneConnectionError || '正在读取手机连接地址…'}</p>}
+      <button onClick={() => { setPhoneConnection(null); setPhoneConnectionError(''); setPhoneRevision(value => value + 1) }}>刷新连接地址</button>
+    </section>
     <p className="receiver-status" role="status">接收端：{activeAddress} · {connection}</p>
     {error && <section role="alert"><strong>{error}</strong><p>确认 Go 服务已启动、地址正确且允许浏览器跨域访问。</p><button onClick={() => { setLoading(true); setError(''); setRevision(value => value + 1) }} disabled={loading}>重试</button></section>}
     {loading && <p role="status">正在加载问题…</p>}

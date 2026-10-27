@@ -23,7 +23,7 @@ public static class ReceiverQueueChecks
         using (var first = new Fixture(18121, A))
         using (var moved = new Fixture(18122, A))
         using (var other = new Fixture(18123, B))
-        using (var client = ReceiverDiscovery.CreateClient(3)) {
+        using (var client = ReceiverConnection.CreateClient(3)) {
             const string body = "{\"title\":\"frozen snapshot\",\"snapshot\":\"original bytes\"}";
             var queue = new ReportQueue(root);
             var legacy = queue.Add(first.Address, "/api/reports", body, "original-key", true);

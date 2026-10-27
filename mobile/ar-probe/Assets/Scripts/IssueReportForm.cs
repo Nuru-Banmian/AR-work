@@ -1,17 +1,11 @@
 using System;
 using System.Collections;
 using System.Net.Http;
-using System.Collections.Generic;
-using System.Linq;
-using System.Threading.Tasks;
 using UnityEngine;
-using UnityEngine.Networking;
 using UnityEngine.UI;
 
 public sealed class IssueReportForm : MonoBehaviour
 {
-    [Serializable] private sealed class HealthData { public string status; }
-    [Serializable] private sealed class Health { public HealthData data; }
     [Serializable] private sealed class PendingRequest { public string key, body, server, endpoint; }
     private const string PendingPreference = "arwork.pending-report";
 
@@ -26,12 +20,7 @@ public sealed class IssueReportForm : MonoBehaviour
     private string activeServer, draftServer, draftReceiverId;
     private Text settingsMessage;
     private string receiverId;
-    private ReceiverInfo[] receivers = new ReceiverInfo[0];
-    private int receiverIndex;
-    private bool discovering;
-    private float nextDiscovery;
-    private Button receiverChoice;
-    private readonly HttpClient receiverClient = ReceiverDiscovery.CreateClient(4);
+    private readonly HttpClient receiverClient = ReceiverConnection.CreateClient(4);
     public bool NavigationLocked => busy || capturing;
     private bool positionLocked;
     public bool PositionLocked { get => capturing || (history != null && history.IsRemarking ? history.RemarkLocked : positionLocked || !probe.CameraActive || (history != null && history.IsOpen)); private set => positionLocked = value; }
@@ -73,30 +62,20 @@ public sealed class IssueReportForm : MonoBehaviour
             if (history.Busy) return;
             history.Hide(); homeControls.SetActive(false); settingsPanel.SetActive(true);
         });
-        settingsPanel = NavigationPanel(parent, "设置", 1100);
-        ButtonAt(settingsPanel.transform, "扫描 / 重扫局域网接收端", 970, 0.03f, 0.97f, () => StartCoroutine(Discover(true)));
-        receiverChoice = ButtonAt(settingsPanel.transform, "尚未扫描（点击切换候选）", 870, 0.03f, 0.97f, () => {
-            if (receivers.Length == 0) return;
-            receiverIndex = (receiverIndex + 1) % receivers.Length; ShowReceiverChoice();
-        });
-        ButtonAt(settingsPanel.transform, "选择此电脑", 770, 0.03f, 0.97f, () => {
-            if (!busy && receivers.Length > 0) StartCoroutine(SelectReceiver(receivers[receiverIndex]));
-        });
-        address = Field(settingsPanel.transform, "诊断备用地址：http://电脑IP:端口", 490, 75, false);
+        settingsPanel = NavigationPanel(parent, "设置", 760);
+        address = Field(settingsPanel.transform, "输入 PC 显示的地址，如 http://192.168.1.8:18088", 590, 85, false);
         activeServer = PlayerPrefs.GetString("arwork.server", "http://127.0.0.1:18088");
         receiverId = PlayerPrefs.GetString("arwork.receiver-id", "");
         address.text = activeServer;
         settingsMessage = Label(settingsPanel.transform, 27);
-        settingsMessage.rectTransform.offsetMin = new Vector2(25, 10);
-        settingsMessage.rectTransform.anchorMin = settingsMessage.rectTransform.anchorMax = new Vector2(0.5f, 0);
+        settingsMessage.rectTransform.anchorMin = new Vector2(0.03f, 0);
+        settingsMessage.rectTransform.anchorMax = new Vector2(0.97f, 0);
         settingsMessage.rectTransform.pivot = new Vector2(0.5f, 0);
-        settingsMessage.rectTransform.sizeDelta = new Vector2(-50, 170);
-        settingsMessage.rectTransform.anchorMin = new Vector2(0, 0);
-        settingsMessage.rectTransform.anchorMax = new Vector2(1, 0);
-        settingsMessage.rectTransform.anchoredPosition = new Vector2(0, 550);
-        test = ButtonAt(settingsPanel.transform, "保存并测试连接", 400, 0.03f, 0.97f, () => StartCoroutine(TestConnection()));
-        ButtonAt(settingsPanel.transform, "保存并返回首页", 310, 0.03f, 0.97f, () => { if (!busy && SaveAddress()) ShowHome(); });
-        ButtonAt(settingsPanel.transform, "取消", 225, 0.03f, 0.97f, () => {
+        settingsMessage.rectTransform.sizeDelta = new Vector2(0, 220);
+        settingsMessage.rectTransform.anchoredPosition = new Vector2(0, 330);
+        settingsMessage.text = "电脑启动后会显示手机连接地址与端口。手机和电脑需在同一局域网，输入完整地址后连接。";
+        test = ButtonAt(settingsPanel.transform, "连接并保存", 220, 0.03f, 0.97f, () => StartCoroutine(TestConnection()));
+        ButtonAt(settingsPanel.transform, "返回首页", 120, 0.03f, 0.97f, () => {
             if (busy) return; address.text = activeServer; ShowHome();
         });
         captureControls = NavigationPanel(parent, "采集操作", 170);
@@ -200,29 +179,14 @@ public sealed class IssueReportForm : MonoBehaviour
         RefreshControls();
     }
 
-    private bool SaveAddress()
-    {
-        // Selection is committed only by a verified handshake, never by typing an address.
-        if (address.text.Trim().TrimEnd('/') != activeServer) {
-            settingsMessage.text = "请先测试地址并验证接收端身份，或扫描选择电脑。"; return false;
-        }
-        return true;
-    }
-
-    private void ShowReceiverChoice()
-    {
-        receiverChoice.GetComponentInChildren<Text>().text = receivers.Length == 0 ? "未发现接收端" :
-            (receiverIndex + 1) + "/" + receivers.Length + " " + receivers[receiverIndex].name + " (点击切换)\n" + receivers[receiverIndex].address;
-    }
-
     private IEnumerator SelectReceiver(ReceiverInfo candidate)
     {
         if (busy || history.Busy || history.IsRemarking) yield break;
         busy = true; RefreshControls();
         settingsMessage.text = "正在核对接收端身份…";
-        var task = ReceiverDiscovery.Verify(receiverClient, candidate.address, candidate.id);
+        var task = ReceiverConnection.Verify(receiverClient, candidate.address, candidate.id);
         while (!task.IsCompleted) yield return null;
-        if (task.IsFaulted || task.IsCanceled) settingsMessage.text = "身份验证失败，原目的地和待上传资料保留。请重扫。";
+        if (task.IsFaulted || task.IsCanceled) settingsMessage.text = "连接失败：请核对电脑显示的 IP 和端口、同一 Wi-Fi 及电脑防火墙。原目的地和待上传资料保留。";
         else if (history.Busy || history.IsRemarking || probe.CameraActive)
             settingsMessage.text = "现场操作或保存正在进行，接收端切换已推迟，请稍后重试。";
         else {
@@ -254,34 +218,6 @@ public sealed class IssueReportForm : MonoBehaviour
         }
         // At a remembered address require the remembered identity; another service cannot silently replace it.
         yield return SelectReceiver(new ReceiverInfo { address = value, id = value == activeServer && !string.IsNullOrEmpty(receiverId) ? receiverId : null });
-    }
-
-    private IEnumerator Discover(bool manual)
-    {
-        if (discovering || busy) yield break;
-        discovering = true; nextDiscovery = Time.realtimeSinceStartup + 20;
-        if (manual) settingsMessage.text = "正在扫描同一局域网（约 3 秒）…";
-        var scan = ReceiverDiscovery.Scan();
-        while (!scan.IsCompleted) yield return null;
-        var verified = new List<ReceiverInfo>();
-        if (!scan.IsFaulted && !scan.IsCanceled) {
-            var checks = scan.Result.Take(16).Select(candidate => ReceiverDiscovery.Verify(receiverClient, candidate.address, candidate.id)).ToArray();
-            var all = Task.WhenAll(checks);
-            while (!all.IsCompleted) yield return null;
-            foreach (var check in checks)
-                if (!check.IsFaulted && !check.IsCanceled && !verified.Exists(item => item.id == check.Result.id)) verified.Add(check.Result);
-            // Observe aggregate failure; valid peers are still selectable if one advertisement fails.
-            if (all.IsFaulted) { var observed = all.Exception; }
-        }
-        receivers = verified.ToArray(); receiverIndex = 0; ShowReceiverChoice();
-        if (manual) settingsMessage.text = receivers.Length == 0
-            ? "未发现电脑。请确认同一 Wi-Fi、电脑接收端已启动，关闭访客网络隔离，允许防火墙 UDP 18087 与实际 API TCP 端口；然后重扫。"
-            : "发现 " + receivers.Length + " 台电脑。点击候选切换，再选择此电脑。";
-        var remembered = verified.Find(item => item.id == receiverId);
-        discovering = false;
-        // Never auto-select an unknown computer, and never move a capture draft during collection.
-        if (remembered != null && remembered.address != activeServer && !probe.CameraActive && !history.IsRemarking && !history.Busy)
-            yield return SelectReceiver(remembered);
     }
 
     private IEnumerator Submit()
@@ -343,7 +279,7 @@ public sealed class IssueReportForm : MonoBehaviour
         if (history.Busy) return;
         if (string.IsNullOrEmpty(receiverId)) {
             history.Hide(); homeControls.SetActive(false); settingsPanel.SetActive(true);
-            settingsMessage.text = "请先扫描选择接收端；选择后可以离线采集。"; return;
+            settingsMessage.text = "请先输入 PC 显示的地址并连接；保存后可以离线采集。"; return;
         }
         history.Hide(); homeControls.SetActive(false);
         if (draftServer != null && (draftServer != activeServer || draftReceiverId != receiverId))
@@ -357,8 +293,6 @@ public sealed class IssueReportForm : MonoBehaviour
 
     private void Update()
     {
-        if (local != null && !discovering && !busy && !probe.CameraActive && !history.IsRemarking && Time.realtimeSinceStartup >= nextDiscovery)
-            StartCoroutine(Discover(false));
         if (capture != null) capture.interactable = !capturing && hasPosition && probe.HasTrackedDraft && !probe.SurfaceInteractionActive;
     }
 

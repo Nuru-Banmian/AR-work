@@ -16,10 +16,11 @@ import (
 )
 
 type Receiver struct {
-	ID       string `json:"id"`
-	Name     string `json:"name"`
-	Protocol int    `json:"protocol"`
-	Port     int    `json:"port"`
+	ID        string            `json:"id"`
+	Name      string            `json:"name"`
+	Protocol  int               `json:"protocol"`
+	Port      int               `json:"port"`
+	Addresses []ReceiverAddress `json:"addresses"`
 }
 
 // Identity belongs to the data directory, independent of host name or service address.
@@ -78,7 +79,9 @@ func receiverHandler(next http.Handler, receiver Receiver) http.Handler {
 				fail(w, 405, "method_not_allowed", "Use GET")
 				return
 			}
-			respond(w, 200, map[string]any{"data": receiver})
+			current := receiver
+			current.Addresses = phoneAddresses(current.Port)
+			respond(w, 200, map[string]any{"data": current})
 			return
 		}
 		next.ServeHTTP(w, r)
@@ -94,29 +97,36 @@ func listenRange(host string, start, count int) (net.Listener, error) {
 	return nil, fmt.Errorf("no available API port in %d..%d", start, start+count-1)
 }
 
-// Discovery sends only metadata, never uploads. The phone derives the host from the packet source
-// and verifies the returned identity over HTTP before selecting or sending anything.
-func serveDiscovery(receiver Receiver) (*net.UDPConn, error) {
-	conn, err := net.ListenUDP("udp4", &net.UDPAddr{Port: 18087})
+type ReceiverAddress struct {
+	Interface string `json:"interface"`
+	Address   string `json:"address"`
+}
+
+func phoneAddresses(port int) []ReceiverAddress {
+	result := []ReceiverAddress{}
+	interfaces, err := net.Interfaces()
 	if err != nil {
-		return nil, err
+		return result
 	}
-	go func() {
-		buffer := make([]byte, 128)
-		for {
-			count, peer, err := conn.ReadFromUDP(buffer)
-			if err != nil {
-				return
-			}
-			if string(buffer[:count]) != "ARWORK-DISCOVER-1" {
+	for _, device := range interfaces {
+		if device.Flags&net.FlagUp == 0 || device.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		addresses, err := device.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, address := range addresses {
+			ip, _, err := net.ParseCIDR(address.String())
+			if err != nil || ip.To4() == nil || ip.IsLoopback() || ip.IsLinkLocalUnicast() {
 				continue
 			}
-			body, _ := json.Marshal(receiver)
-			_, _ = conn.WriteToUDP(body, peer)
+			result = append(result, ReceiverAddress{Interface: device.Name, Address: "http://" + net.JoinHostPort(ip.String(), strconv.Itoa(port))})
 		}
-	}()
-	return conn, nil
+	}
+	return result
 }
+
 func runReceiver() error {
 	dataPath := env("ARWORK_DATA", "data/issues.json")
 	handler, err := newAPI(dataPath, env("ARWORK_ORIGINS", "http://localhost:5176,http://127.0.0.1:5176"))
@@ -142,12 +152,8 @@ func runReceiver() error {
 	}
 	defer listener.Close()
 	receiver.Port = listener.Addr().(*net.TCPAddr).Port
-	discovery, err := serveDiscovery(receiver)
-	if err != nil {
-		return fmt.Errorf("LAN discovery unavailable (UDP 18087): %w", err)
-	}
-	defer discovery.Close()
-	// Launcher reads a unique per-run readiness file only after both sockets are owned.
+	receiver.Addresses = phoneAddresses(receiver.Port)
+	// Launcher reads a unique per-run readiness file only after the API socket is owned.
 	if ready := os.Getenv("ARWORK_READY"); ready != "" {
 		bytes, _ := json.Marshal(receiver)
 		if err := os.WriteFile(ready+".tmp", bytes, 0600); err != nil {

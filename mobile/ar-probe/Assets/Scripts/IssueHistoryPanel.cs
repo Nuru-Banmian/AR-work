@@ -22,7 +22,7 @@ public sealed class IssueHistoryPanel : MonoBehaviour
     [Serializable] private sealed class Content { public string title, description, priority; }
     private ReportQueue remarkQueue;
     private ReportQueueSender remarkSender;
-    private readonly HttpClient remarkClient = ReceiverDiscovery.CreateClient(30);
+    private readonly HttpClient remarkClient = ReceiverConnection.CreateClient(30);
     private string remarkKey;
     private bool frozenRemark;
     private string RemarkEndpoint => "/api/issues/" + selectedId + "/position";

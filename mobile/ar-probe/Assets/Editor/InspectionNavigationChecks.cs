@@ -189,9 +189,9 @@ public sealed class InspectionNavigationRunner : MonoBehaviour
         Check(Field<string>(form, "draftServer") == "http://127.0.0.1:18083" && Field<string>(form, "draftReceiverId") == new string('a',32),
             "same receiver readdress preserves capture draft identity and follows new address");
         history.Hide(); Field<InputField>(form, "address").text = "http://127.0.0.1:18082";
-        Check(!(bool)Call(form, "SaveAddress"), "unverified typed address cannot switch service");
+        Check(PlayerPrefs.GetString("arwork.server") == "http://127.0.0.1:18083", "unconfirmed typed address cannot switch saved service");
         yield return form.StartCoroutine((IEnumerator)Call(form, "TestConnection"));
-        Check((bool)Call(form, "SaveAddress"), "settings accepts identity-verified service"); form.ShowHome();
+        Check(PlayerPrefs.GetString("arwork.server") == "http://127.0.0.1:18082", "manual connection saves identity-verified service"); form.ShowHome();
         Check(rows.GetComponentsInChildren<Button>().Length == 0, "service switch immediately hides previous rows");
         yield return new WaitForSecondsRealtime(1);
         Check(rows.GetComponentInChildren<Text>().text.Contains("Server B"), "new service reads its own records");
@@ -200,7 +200,8 @@ public sealed class InspectionNavigationRunner : MonoBehaviour
         Check(GameObject.Find("现场照片").GetComponentInChildren<RawImage>().texture == null, "legacy record does not show previous server photo");
         Check(!probe.CameraActive, "all browsing leaves camera stopped");
         history.Hide(); Field<InputField>(form, "address").text = "file:///invalid";
-        Check(!(bool)Call(form, "SaveAddress"), "invalid service is rejected");
+        yield return form.StartCoroutine((IEnumerator)Call(form, "TestConnection"));
+        Check(Field<Text>(form,"settingsMessage").text.Contains("地址格式"), "invalid service is rejected");
         Check(PlayerPrefs.GetString("arwork.server") == "http://127.0.0.1:18082", "invalid input preserves saved service");
         Field<InputField>(form, "address").text = "http://127.0.0.1:18082";
         Field<Button>(form, "test").onClick.Invoke(); yield return new WaitForSecondsRealtime(1);

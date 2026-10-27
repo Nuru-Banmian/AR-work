@@ -31,7 +31,7 @@ public sealed class ReportQueueSender
             entry = queue.BeginSend(entry.key); // durable before any network I/O
             try {
                 queue.Stage(entry.key, "正在核对接收端身份");
-                var receiver = await ReceiverDiscovery.Verify(client, server, string.IsNullOrEmpty(entry.receiverId) ? queue.ReceiverAt(server) : entry.receiverId);
+                var receiver = await ReceiverConnection.Verify(client, server, string.IsNullOrEmpty(entry.receiverId) ? queue.ReceiverAt(server) : entry.receiverId);
                 entry = queue.BindReceiver(entry.key, server, receiver.id);
                 queue.RememberLegacyReceiver(server, receiver.id);
                 using (var request = new HttpRequestMessage(ReportQueue.IsRemarkEndpoint(entry.endpoint) ? new HttpMethod("PATCH") : HttpMethod.Post, server + entry.endpoint)) {

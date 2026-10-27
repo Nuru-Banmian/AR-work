@@ -107,7 +107,7 @@ try {
         ForEach-Object { Write-Host "  http://$($_.IPAddress):$ApiPort [$($_.InterfaceAlias)]" }
     Write-Host "Data: $DataFile"
     Write-Host "Logs: $runtime"
-    Write-Host 'Phone: Settings > Scan receivers; select this computer on the same LAN (UDP 18087 and API TCP port must be allowed).'
+    Write-Host 'Phone: Settings > enter one of the LAN API addresses above > Connect and save. Allow the actual API TCP port in the PC firewall.'
     Write-Host 'Keep this terminal open. Press Ctrl+C to stop both services.'
     if (-not $NoBrowser) { Start-Process $webUrl }
     while ($true) {
