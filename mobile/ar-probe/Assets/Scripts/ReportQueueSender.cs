@@ -19,7 +19,8 @@ public sealed class ReportQueueSender
     {
         if (!await sending.WaitAsync(0)) return false;
         try {
-            var candidates = queue.List(server).Where(item => item.state != "synced" &&
+            var candidates = queue.List(server).Where(item => (item.state != "synced" ||
+                (requestedKey != null && ReportQueue.IsRemarkEndpoint(item.endpoint))) &&
                 (requestedKey == null || item.key == requestedKey)).ToArray();
             var entry = candidates.FirstOrDefault(item => string.CompareOrdinal(item.key, lastAttempt) > 0)
                 ?? candidates.FirstOrDefault();

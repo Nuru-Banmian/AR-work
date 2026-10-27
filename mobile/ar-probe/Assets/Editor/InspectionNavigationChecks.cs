@@ -27,8 +27,11 @@ public static class InspectionNavigationChecks
 
     public static void Run()
     {
-        var queuePath = Path.Combine(Application.persistentDataPath, "report-queue-v1");
-        if (Directory.Exists(queuePath)) Directory.Move(queuePath, queuePath + ".navigation-backup");
+        foreach (var name in new[] { "report-queue-v1", "remark-queue-v1" }) {
+            var queuePath = Path.Combine(Application.persistentDataPath, name);
+            if (Directory.Exists(queuePath + ".navigation-backup")) throw new IOException("Existing navigation backup; preserve it before running checks");
+            if (Directory.Exists(queuePath)) Directory.Move(queuePath, queuePath + ".navigation-backup");
+        }
         foreach (var key in new[] { "arwork.server", "arwork.pending-report", "arwork.receiver-id" })
         {
             SessionState.SetBool(key + ".exists", PlayerPrefs.HasKey(key));
@@ -47,9 +50,12 @@ public static class InspectionNavigationChecks
         foreach (var key in new[] { "arwork.server", "arwork.pending-report", "arwork.receiver-id" })
             if (SessionState.GetBool(key + ".exists", false)) PlayerPrefs.SetString(key, SessionState.GetString(key + ".backup", ""));
             else PlayerPrefs.DeleteKey(key);
-        var queuePath = Path.Combine(Application.persistentDataPath, "report-queue-v1");
-        if (Directory.Exists(queuePath)) Directory.Delete(queuePath, true);
-        if (Directory.Exists(queuePath + ".navigation-backup")) Directory.Move(queuePath + ".navigation-backup", queuePath);
+        foreach (var name in new[] { "report-queue-v1", "remark-queue-v1" }) {
+            var queuePath = Path.GetFullPath(Path.Combine(Application.persistentDataPath, name));
+            if (!queuePath.StartsWith(Path.GetFullPath(Application.persistentDataPath) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)) throw new IOException("Invalid check queue path");
+            if (Directory.Exists(queuePath)) Directory.Delete(queuePath, true);
+            if (Directory.Exists(queuePath + ".navigation-backup")) Directory.Move(queuePath + ".navigation-backup", queuePath);
+        }
         PlayerPrefs.Save(); SessionState.SetBool(Flag, false);
         EditorApplication.Exit(code);
     }
@@ -197,6 +203,20 @@ public sealed class InspectionNavigationRunner : MonoBehaviour
         Check(probe.CameraActive && history.IsRemarking, "remark explicitly enters camera");
         Field<Button>(history, "cancelRemark").onClick.Invoke();
         Check(!probe.CameraActive && !history.IsRemarking && history.IsOpen, "cancel remark stops camera and returns detail");
+        var remarkQueue = new ReportQueue(Path.Combine(Application.persistentDataPath, "remark-queue-v1"));
+        remarkQueue.RememberReceiver("http://127.0.0.1:18082", new string('b',32));
+        const string frozenScene = "{\"reportVersion\":2,\"snapshot\":\"frozen-photo\",\"position\":{\"x\":7,\"y\":8,\"z\":9},\"model\":{\"version\":1}}";
+        remarkQueue.Add("http://127.0.0.1:18082", "/api/issues/same-id/position", frozenScene, "restored-remark", true);
+        Field<Button>(history, "remark").onClick.Invoke();
+        Check(history.IsRemarking && !probe.CameraActive && history.RemarkLocked && Field<Button>(history,"confirmRemark").interactable, "restored replacement can retry without a new AR session");
+        Field<Button>(history, "cancelRemark").onClick.Invoke();
+        Check(remarkQueue.Get("restored-remark").body == frozenScene && remarkQueue.Get("restored-remark").state == "pending", "cancel restored replacement sends nothing and preserves frozen request");
+        Field<Button>(history, "remark").onClick.Invoke();
+        Field<Button>(history, "confirmRemark").onClick.Invoke();
+        yield return new WaitForSecondsRealtime(1);
+        Check(!history.Busy && remarkQueue.Get("restored-remark").state == "failed" && Field<Text>(history,"remarkMessage").text.Contains("未确认"), "incomplete restored receipt keeps original request with retry feedback");
+        Field<Button>(history, "cancelRemark").onClick.Invoke();
+        Check(!history.IsRemarking && !probe.CameraActive && history.IsOpen, "restored retry cancellation returns to detail");
         form.ShowHome(); history.Hide();
         Check(!history.IsOpen && !history.Busy, "navigation can cancel loading");
         var local = form.GetComponent<LocalReports>();

@@ -91,6 +91,12 @@ public static class ReceiverQueueChecks
             moved.WrongId = false;
             await new ReportQueueSender(queue).UploadNext(moved.Address, client);
             Check(queue.Get("remark-http").state == "synced" && moved.Body == remarkBody && moved.Key == "remark-http", "same frozen replacement is acknowledged after process reconstruction");
+            moved.Fail = true;
+            await new ReportQueueSender(queue).UploadNext(moved.Address, client, "remark-http");
+            Check(queue.Get("remark-http").state == "failed", "restored acknowledged remark revalidates HTTP rather than trusting stale current receipt");
+            moved.Fail = false;
+            await new ReportQueueSender(queue).UploadNext(moved.Address, client, "remark-http");
+            Check(queue.Get("remark-http").state == "synced", "cleanup recovery obtains a fresh receipt with original body and key");
             var retained = queue.Add(moved.Address, "/api/reports", body, "unrelated", true);
             queue.ForgetSynced(moved.Address, "saved");
             Check(queue.List(moved.Address).Length == 1 && queue.Get(retained.key).body == body, "retiring old acknowledged copies preserves unrelated pending data");

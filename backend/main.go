@@ -101,6 +101,9 @@ func newAPI(path, allowedOrigins string) (http.Handler, error) {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return nil, err
 	}
+	if err := cleanupSnapshotTemps(path, a.issues); err != nil {
+		return nil, err
+	}
 	return a, nil
 }
 
@@ -418,7 +421,10 @@ func saveIssues(path string, stored snapshot) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return err
 	}
-	file, err := os.CreateTemp(filepath.Dir(path), ".issues-*.tmp")
+	if err := cleanupSnapshotTemps(path, stored.Issues); err != nil {
+		return err
+	}
+	file, err := os.CreateTemp(filepath.Dir(path), ".issues-"+filepath.Base(path)+"-*.tmp")
 	if err != nil {
 		return err
 	}

@@ -196,6 +196,11 @@ func TestCompleteRemarkFailureRetainsOldSceneAndSuccessRetiresOldBytes(t *testin
 	}
 	os.Remove(path)
 	os.Rename(path+".original", path)
+	// Simulate a crash leaving a recognized legacy save temporary containing the
+	// old complete snapshot. Similarly named user files must remain untouched.
+	oldSnapshot, _ := os.ReadFile(path)
+	os.WriteFile(filepath.Join(dir, ".issues-123456789.tmp"), oldSnapshot, 0600)
+	os.WriteFile(filepath.Join(dir, ".issues-user-backup.tmp"), oldSnapshot, 0600)
 	var wg sync.WaitGroup
 	for suffix, b := range map[string]string{"/position": replacement, "/status": `{"status":"resolved"}`, "/content": `{"title":"Concurrent","description":"keep","priority":"low"}`} {
 		wg.Add(1)
@@ -219,13 +224,21 @@ func TestCompleteRemarkFailureRetainsOldSceneAndSuccessRetiresOldBytes(t *testin
 		t.Fatal("old attachment retained in durable snapshot")
 	}
 	files, _ := os.ReadDir(dir)
-	if len(files) != 1 {
+	if len(files) != 2 {
 		t.Fatal("old or temporary attachment snapshot retained")
 	}
+	if _, err := os.Stat(filepath.Join(dir, ".issues-user-backup.tmp")); err != nil {
+		t.Fatal("unrelated backup removed")
+	}
 	s.Close()
+	orphan := filepath.Join(dir, ".issues-issues.json-876543210.tmp")
+	os.WriteFile(orphan, oldSnapshot, 0600)
 	h, _ = newAPI(path, "*")
 	s = httptest.NewServer(h)
 	defer s.Close()
+	if _, err := os.Stat(orphan); !os.IsNotExist(err) {
+		t.Fatal("restart retained recognized crash temporary")
+	}
 	response, _ = http.Get(s.URL + original.SnapshotURL)
 	actual, _ = io.ReadAll(response.Body)
 	response.Body.Close()

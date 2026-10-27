@@ -95,7 +95,9 @@ public sealed class ReportQueue
     public Entry BeginSend(string key)
     {
         var entry = Get(key);
-        if (entry.state == "synced") throw new InvalidOperationException("Already acknowledged");
+        // A manually recovered remark must revalidate its current scene receipt;
+        // creation acknowledgements never need to resend their old frozen body.
+        if (entry.state == "synced" && !IsRemarkEndpoint(entry.endpoint)) throw new InvalidOperationException("Already acknowledged");
         entry.frozen = true; entry.state = "uploading"; entry.error = null;
         Write(entry); return Get(key);
     }
