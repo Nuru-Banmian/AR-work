@@ -2,6 +2,9 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Text;
+using System.IO;
+using System.Linq;
+using System.Net.Http;
 using UnityEngine;
 using UnityEngine.Networking;
 using UnityEngine.UI;
@@ -11,13 +14,18 @@ public sealed class IssueHistoryPanel : MonoBehaviour
 {
     [Serializable] public sealed class Position { public float x, y, z; }
     [Serializable] public sealed class Issue {
-        public string id, title, description, priority, status, createdAt, updatedAt, snapshotUrl;
+        public string id, title, description, priority, status, createdAt, updatedAt, snapshotUrl, modelUrl, sceneRevision;
         public Position position;
     }
-    [Serializable] private sealed class IssueResult { public Issue data; }
-    [Serializable] private sealed class IssueList { public Issue[] data; }
+    [Serializable] private sealed class IssueResult { public Issue data; public bool replacementCurrent; }
+    [Serializable] private sealed class IssueList { public Issue[] data; public string[] deletedIds; }
     [Serializable] private sealed class Content { public string title, description, priority; }
-    [Serializable] private sealed class Location { public Position position; public string snapshot; }
+    private ReportQueue remarkQueue;
+    private ReportQueueSender remarkSender;
+    private readonly HttpClient remarkClient = ReceiverConnection.CreateClient(30);
+    private string remarkKey;
+    private bool frozenRemark;
+    private string RemarkEndpoint => "/api/issues/" + selectedId + "/position";
 
     public bool IsOpen => IsRemarking || (panel != null && panel.activeSelf);
     public bool IsRemarking { get; private set; }
@@ -25,7 +33,7 @@ public sealed class IssueHistoryPanel : MonoBehaviour
     private bool loading;
     private Coroutine loadRoutine;
     private UnityWebRequest loadRequest;
-    public bool RemarkLocked => busy || snapshotReady;
+    public bool RemarkLocked => busy || snapshotReady || frozenRemark;
     private bool snapshotReady;
     private ArProbe probe;
     private GameObject remarkPanel;
@@ -41,17 +49,17 @@ public sealed class IssueHistoryPanel : MonoBehaviour
     private bool busy, detailLoaded;
     public bool CanApplyLive => !busy;
     private Content loadedContent;
-    private string server, selectedId;
+    private string server, selectedId, receiverScope;
     private readonly string[] priorities = { "low", "medium", "high" };
     private int priorityIndex;
     // A draft remains attached to its server and ID when navigating or retrying.
     private readonly Dictionary<string, Content> drafts = new Dictionary<string, Content>();
     private IssuePhotoView photoView;
     private Issue[] remoteRows = new Issue[0];
-    private bool online;
+    private bool online, deletionNotice;
     private Issue displayedIssue;
     private readonly Dictionary<string, string> syncTimes = new Dictionary<string, string>();
-    private string SyncKey => server + "/" + (selectedId ?? "");
+    private string SyncKey => receiverScope + "/" + (selectedId ?? "");
     private string SyncTime => server != null && syncTimes.TryGetValue(SyncKey, out var time) ? InspectionUi.Time(time) : "尚未同步";
 
     public void MarkSyncUnavailable(string address)
@@ -154,15 +162,38 @@ public sealed class IssueHistoryPanel : MonoBehaviour
         return obj;
     }
 
-    public void Open(string address)
+    public void Open(string address, string identity = null)
     {
         if (Busy) return;
         CancelLoad(); KeepDraft();
-        bool changedServer = server != address;
+        var nextScope = string.IsNullOrEmpty(identity) ? address : identity;
+        bool changedServer = server != address || receiverScope != nextScope;
+        receiverScope = nextScope;
         server = address; selectedId = null; detailLoaded = false; online = false;
-        if (changedServer) remoteRows = new Issue[0];
+        if (changedServer) { remoteRows = new Issue[0]; deletionNotice = false; }
         RenderList(remoteRows);
         panel.SetActive(true); ShowPage(); BeginLoad();
+    }
+
+    // Called only after verifying the same receiver identity at a different address.
+    public void Readdress(string previous, string current)
+    {
+        if (server != previous || Busy || IsRemarking) return;
+        CancelLoad(); KeepDraft();
+        if (receiverScope == previous) {
+            MoveDraftKeys(drafts, previous, current); MoveDraftKeys(syncTimes, previous, current);
+            receiverScope = current;
+        }
+        server = current; online = false; photoView.Clear(); SetBusy(false);
+        if (IsOpen) BeginLoad();
+    }
+
+    private static void MoveDraftKeys<T>(Dictionary<string, T> values, string previous, string current)
+    {
+        foreach (var key in new List<string>(values.Keys)) {
+            if (!key.StartsWith(previous + "/", StringComparison.Ordinal)) continue;
+            values[current + key.Substring(previous.Length)] = values[key]; values.Remove(key);
+        }
     }
 
     public void Hide()
@@ -179,7 +210,7 @@ public sealed class IssueHistoryPanel : MonoBehaviour
         KeepDraft(); panel.SetActive(false); onClose();
     }
 
-    private string DraftKey => server + "/" + selectedId;
+    private string DraftKey => receiverScope + "/" + selectedId;
     private void KeepDraft()
     {
         if (selectedId == null || !detailLoaded || !detailPage.activeSelf || busy) return;
@@ -227,9 +258,14 @@ public sealed class IssueHistoryPanel : MonoBehaviour
         using (var request = UnityWebRequest.Get(Endpoint))
         {
             loadRequest = request;
-            request.timeout = 15;
+            request.timeout = 15; GuardRead(request);
             yield return request.SendWebRequest();
-            if (request.result != UnityWebRequest.Result.Success) {
+            if (request.result != UnityWebRequest.Result.Success || !AcceptRead(request)) {
+                if (request.responseCode == 410 && VerifiedRead(request) && selectedId != null) {
+                    RemoveDeletedSelection();
+                    loadRequest = null; loading = false; SetBusy(false);
+                    GetComponent<IssueLiveUpdates>()?.Refresh(); yield break;
+                }
                 MarkSyncUnavailable(server);
                 message.text = InspectionUi.Error(request) + "已同步记录只读，旧状态截至 " + SyncTime + "。本地记录仍可查看，可点击刷新重试。";
             }
@@ -239,11 +275,13 @@ public sealed class IssueHistoryPanel : MonoBehaviour
                 {
                     if (selectedId == null)
                     {
-                        var issues = JsonUtility.FromJson<IssueList>(request.downloadHandler.text)?.data;
+                        var snapshot = JsonUtility.FromJson<IssueList>(request.downloadHandler.text);
+                        var issues = snapshot?.data;
                         if (issues == null) throw new ArgumentException("Missing issue list");
+                        ReconcileSnapshot(server, issues, VerifiedRead(request) ? snapshot.deletedIds : null);
                         MarkSynced();
                         RenderList(issues);
-                        message.text = issues.Length == 0 ? "暂无服务器问题，本地记录见列表。" : "共 " + issues.Length + " 个问题，点击查看详情。";
+                        message.text = (deletionNotice ? "问题已被永久删除，相关本地记录与现场标记已移除。\n" : "") + (issues.Length == 0 ? "暂无服务器问题，本地记录见列表。" : "共 " + issues.Length + " 个问题，点击查看详情。");
                     }
                     else
                     {
@@ -254,7 +292,7 @@ public sealed class IssueHistoryPanel : MonoBehaviour
                         message.text = drafts.ContainsKey(DraftKey) ? "状态已更新，未保存的内容已保留。" : "可修改内容或重新标记。";
                     }
                 }
-                catch (ArgumentException) { MarkSyncUnavailable(server); message.text = "返回数据异常，已同步记录只读，草稿已保留，请刷新重试。"; }
+                catch (Exception error) { MarkSyncUnavailable(server); message.text = "同步或本地清理未完成，请保留应用数据并刷新重试。"; Debug.LogException(error); }
             }
         }
         loadRequest = null; loading = false; SetBusy(false);
@@ -289,15 +327,17 @@ public sealed class IssueHistoryPanel : MonoBehaviour
         foreach (var button in rows.GetComponentsInChildren<Button>()) button.interactable = !busy;
     }
 
-    public void ApplyLiveIssues(string address, Issue[] issues)
+    public void ApplyLiveIssues(string address, Issue[] issues, string[] deletedIds = null)
     {
-        if (address != server || !IsOpen || busy) return;
+        if (address != server || busy) return;
+        ReconcileSnapshot(address, issues, deletedIds);
+        if (!IsOpen) return;
         KeepDraft();
         MarkSynced();
         if (selectedId == null)
         {
             RenderList(issues);
-            message.text = issues.Length == 0 ? "暂无服务器问题，本地记录见列表。" : "共 " + issues.Length + " 个问题，点击查看详情。";
+            message.text = (deletionNotice ? "问题已被永久删除，相关本地记录与现场标记已移除。\n" : "") + (issues.Length == 0 ? "暂无服务器问题，本地记录见列表。" : "共 " + issues.Length + " 个问题，点击查看详情。");
         }
         else foreach (var issue in issues)
         {
@@ -306,6 +346,54 @@ public sealed class IssueHistoryPanel : MonoBehaviour
         }
         // Do not change remark position, replacement draft or save/cancel controls.
         if (!IsRemarking) SetBusy(false);
+    }
+
+    private string ExpectedReceiver => receiverScope != server ? receiverScope : GetComponent<LocalReports>()?.ReceiverIdentity(server);
+    public void GuardRead(UnityWebRequest request)
+    {
+        request.redirectLimit = 0;
+        if (!string.IsNullOrEmpty(ExpectedReceiver)) request.SetRequestHeader("X-ARWork-Receiver", ExpectedReceiver);
+    }
+    public bool AcceptRead(UnityWebRequest request) => string.IsNullOrEmpty(ExpectedReceiver) || VerifiedRead(request);
+    public bool VerifiedRead(UnityWebRequest request) => !string.IsNullOrEmpty(ExpectedReceiver) && request.GetResponseHeader("X-ARWork-Receiver") == ExpectedReceiver;
+
+    private bool ReconcileSnapshot(string address, Issue[] issues, string[] deletedIds)
+    {
+        if (issues.Any(issue => issue == null || string.IsNullOrEmpty(issue.id)) || issues.Select(issue => issue.id).Distinct().Count() != issues.Length)
+            throw new ArgumentException("Invalid full issue snapshot; local records retained");
+        var ids = deletedIds ?? new string[0];
+        if (ids.Any(string.IsNullOrEmpty)) throw new ArgumentException("Invalid deleted IDs");
+        GetComponent<LocalReports>()?.ReconcileDeleted(address, ids);
+        var replacements = new ReportQueue(Path.Combine(Application.persistentDataPath, "remark-queue-v1"));
+        if (receiverScope != address) replacements.RememberReceiver(address, receiverScope);
+        replacements.ReconcileDeleted(address, ids);
+        bool deleted = remoteRows.Any(issue => ids.Contains(issue.id)) || (selectedId != null && ids.Contains(selectedId));
+        if (selectedId != null && ids.Contains(selectedId)) RemoveDeletedSelection();
+        foreach (var key in drafts.Keys.Where(key => key.StartsWith(receiverScope + "/", StringComparison.Ordinal) && ids.Contains(key.Substring(receiverScope.Length + 1))).ToArray())
+            drafts.Remove(key);
+        probe.RemoveDeletedIssueMarkers(address, ids);
+        if (deleted) deletionNotice = true;
+        return deleted;
+    }
+
+    public void NotifyDeletedIssue(string address, string id)
+    {
+        if (server != address) return;
+        deletionNotice = true;
+        if (selectedId == id && !busy) RemoveDeletedSelection();
+        message.text = "问题已被永久删除，相关本地记录与现场标记已移除。";
+    }
+
+    private void RemoveDeletedSelection()
+    {
+        deletionNotice = true;
+        var id = selectedId;
+        if (IsRemarking) EndRemark(false);
+        drafts.Remove(DraftKey); displayedIssue = null; detailLoaded = false;
+        probe.RetireIssueMarker(server, id);
+        selectedId = null; photoView.Clear(); ShowPage();
+        remoteRows = remoteRows.Where(issue => issue.id != id).ToArray(); RenderList(remoteRows);
+        message.text = "问题已被永久删除，相关本地记录与现场标记已移除。";
     }
 
     private void RequireIssue(Issue issue)
@@ -339,9 +427,10 @@ public sealed class IssueHistoryPanel : MonoBehaviour
         {
             request.uploadHandler = new UploadHandlerRaw(Encoding.UTF8.GetBytes(body));
             request.downloadHandler = new DownloadHandlerBuffer();
-            request.SetRequestHeader("Content-Type", "application/json"); request.timeout = 15;
+            request.SetRequestHeader("Content-Type", "application/json"); request.timeout = 15; GuardRead(request);
             yield return request.SendWebRequest();
-            if (request.result != UnityWebRequest.Result.Success) {
+            if (request.result != UnityWebRequest.Result.Success || !AcceptRead(request)) {
+                if (request.responseCode == 410 && VerifiedRead(request)) { SetBusy(false); RemoveDeletedSelection(); GetComponent<IssueLiveUpdates>()?.Refresh(); yield break; }
                 MarkSyncUnavailable(server);
                 message.text = InspectionUi.Error(request) + "结果待确认，草稿已保留。当前只读，请刷新核对后重试。";
             }
@@ -363,10 +452,20 @@ public sealed class IssueHistoryPanel : MonoBehaviour
     private void BeginRemark()
     {
         if (busy || !detailLoaded || selectedId == null || !online) return;
-        KeepDraft(); probe.BeginRemark(); probe.EnterCamera(); hasRemarkPosition = false; snapshotReady = false; IsRemarking = true;
+        try {
+            remarkQueue = new ReportQueue(Path.Combine(Application.persistentDataPath, "remark-queue-v1"));
+            if (receiverScope != server) remarkQueue.RememberReceiver(server, receiverScope);
+            var pending = remarkQueue.List(server).FirstOrDefault(entry => entry.endpoint == RemarkEndpoint);
+            remarkKey = pending?.key; frozenRemark = pending != null;
+            remarkSender = new ReportQueueSender(remarkQueue);
+        } catch (Exception error) { message.text = "重新标记草稿读取失败，请保留应用数据。"; Debug.LogException(error); return; }
+        KeepDraft(); probe.BeginRemark();
+        if (!frozenRemark) probe.EnterCamera();
+        hasRemarkPosition = frozenRemark; snapshotReady = frozenRemark; IsRemarking = true;
         GetComponent<IssueReportForm>().ShowRemarkNavigation(true);
         panel.SetActive(false); remarkPanel.SetActive(true); SetBusy(false);
-        remarkMessage.text = "请先扫描并暂停，再点击实物重新选点。保存成功后才替换原标记。";
+        confirmRemark.GetComponentInChildren<Text>().text = frozenRemark ? "重试原资料" : "快照 / 下一步";
+        remarkMessage.text = frozenRemark ? "发现已冻结的替换资料。重试沿用原模型、照片与请求编号；不会重新扫描或改写原请求。" : "请先扫描并暂停，再点击实物重新选点。保存成功后才替换原标记。";
     }
 
     public void MarkPositionSelected()
@@ -387,7 +486,8 @@ public sealed class IssueHistoryPanel : MonoBehaviour
         probe.FinishRemark(saved, server, selectedId); probe.LeaveCamera(); IsRemarking = false; snapshotReady = false;
         GetComponent<IssueReportForm>().ShowRemarkNavigation(false);
         hasRemarkPosition = false; remarkPanel.SetActive(false); panel.SetActive(true);
-        if (!saved) message.text = "已取消本次选点，原标记保留。请刷新核对已保存的位置。";
+        if (!saved) message.text = frozenRemark ? "已停止重试，原请求保留；结果可能已保存，请刷新核对，再进入重新标记可继续核对回执。" : "已取消本次选点，原标记保留。远端资料未修改。";
+        frozenRemark = false; remarkKey = null;
     }
 
     private IEnumerator SavePosition()
@@ -402,37 +502,53 @@ public sealed class IssueHistoryPanel : MonoBehaviour
             });
             yield break;
         }
-        if (UnityEngine.XR.ARFoundation.ARSession.state != UnityEngine.XR.ARFoundation.ARSessionState.SessionTracking || !probe.HasTrackedDraft)
-        { remarkMessage.text = "定位暂不可用，请重新扫描后保存。"; yield break; }
-        var point = probe.CurrentPosition;
-        var body = JsonUtility.ToJson(new Location { snapshot = GetComponent<IssueReportForm>().ConfirmedSnapshot, position = new Position { x = point.x, y = point.y, z = point.z } });
-        bool succeeded = false;
-        SetBusy(true); remarkMessage.text = "正在保存位置…";
-        using (var request = new UnityWebRequest(Endpoint + "/position", "PATCH"))
+        if (!frozenRemark)
         {
-            request.uploadHandler = new UploadHandlerRaw(Encoding.UTF8.GetBytes(body));
-            request.downloadHandler = new DownloadHandlerBuffer();
-            request.SetRequestHeader("Content-Type", "application/json"); request.timeout = 15;
-            yield return request.SendWebRequest();
-            if (request.result != UnityWebRequest.Result.Success)
-                remarkMessage.text = InspectionUi.Error(request) + "新位置仍为草稿，可重试；也可取消后刷新核对，结果可能已经保存。";
-            else
-            {
-                try
-                {
-                    var issue = JsonUtility.FromJson<IssueResult>(request.downloadHandler.text)?.data;
-                    RequireIssue(issue);
-                    if (issue.position.x != point.x || issue.position.y != point.y || issue.position.z != point.z)
-                        throw new ArgumentException("Position mismatch");
-                    RenderDetail(issue); succeeded = true;
-                    message.text = "位置已保存 · " + InspectionUi.Status(issue.status) + "。内容草稿已保留。";
-                    Debug.Log("ARWORK_REMARK_SAVED_ID=" + issue.id);
-                }
-                catch (ArgumentException) { remarkMessage.text = "结果尚未确认，新位置仍为草稿。请重试，或取消后刷新核对。"; }
-            }
+            if (UnityEngine.XR.ARFoundation.ARSession.state != UnityEngine.XR.ARFoundation.ARSessionState.SessionTracking || !probe.HasTrackedDraft)
+            { remarkMessage.text = "定位暂不可用，请重新扫描后保存。"; yield break; }
+            try {
+                var point = probe.CurrentPosition;
+                var body = RemarkPayload.Freeze(probe.FreezeIssueModel(), GetComponent<IssueReportForm>().ConfirmedSnapshot, point);
+                // Durable complete scene and key precede even the receiver handshake.
+                var entry = remarkQueue.Add(server, RemarkEndpoint, body, frozen: true,
+                    receiverIdentity: receiverScope == server ? null : receiverScope);
+                remarkKey = entry.key; frozenRemark = true;
+            } catch (Exception error) { remarkMessage.text = "本地替换资料保存失败，原资料不变，可重试。" + error.Message; yield break; }
         }
+        bool succeeded = false, current = false;
+        SetBusy(true); remarkMessage.text = "正在核对接收端并传送完整替换资料，等待持久保存回执…";
+        var upload = remarkSender.UploadNext(server, remarkClient, remarkKey);
+        while (!upload.IsCompleted) yield return null;
+        try {
+            if (upload.IsFaulted || upload.IsCanceled) throw new IOException("替换回执未确认", upload.Exception);
+            var entry = remarkQueue.Get(remarkKey);
+            if (entry.state == "deleted") {
+                SetBusy(false); RemoveDeletedSelection(); GetComponent<IssueLiveUpdates>()?.Refresh(); yield break;
+            }
+            if (entry.state != "synced") throw new IOException(entry.error);
+            var result = JsonUtility.FromJson<IssueResult>(entry.receipt);
+            RequireIssue(result?.data);
+            // Clean acknowledged phone history copies only after receiver success.
+            GetComponent<LocalReports>()?.RetireSyncedScene(server, selectedId);
+            current = result.replacementCurrent;
+            // A restored request has no current-session anchor to promote.
+            if (current && probe.HasTrackedDraft) {
+                var point = probe.CurrentPosition;
+                current = result.data.position.x == point.x && result.data.position.y == point.y && result.data.position.z == point.z;
+            } else current = false;
+            MarkSynced(); RenderDetail(result.data);
+            remarkQueue.ForgetSynced(server, selectedId);
+            succeeded = true;
+            Debug.Log("ARWORK_REMARK_SAVED_ID=" + selectedId);
+        } catch (Exception error) { remarkMessage.text = "替换结果未确认，原正文和请求编号已保留。可重试或返回后刷新核对。" + error.Message; }
         SetBusy(false);
-        if (succeeded) EndRemark(true);
+        if (succeeded) {
+            EndRemark(current);
+            if (!current) probe.RetireIssueMarker(server, selectedId);
+            message.text = "完整替换回执已确认。" + (current ? "新标记已保存。" : "已显示服务器最新资料；重启或较新替换使当前会话无可恢复的新标记。") + "内容草稿已保留。";
+            GetComponent<IssueLiveUpdates>()?.Refresh();
+        }
     }
 
+    private void OnDestroy() { remarkClient.Dispose(); }
 }

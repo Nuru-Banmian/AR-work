@@ -1,13 +1,11 @@
 using System;
 using System.Collections;
+using System.Net.Http;
 using UnityEngine;
-using UnityEngine.Networking;
 using UnityEngine.UI;
 
 public sealed class IssueReportForm : MonoBehaviour
 {
-    [Serializable] private sealed class HealthData { public string status; }
-    [Serializable] private sealed class Health { public HealthData data; }
     [Serializable] private sealed class PendingRequest { public string key, body, server, endpoint; }
     private const string PendingPreference = "arwork.pending-report";
 
@@ -19,8 +17,10 @@ public sealed class IssueReportForm : MonoBehaviour
     private Action snapshotConfirmed;
     private Button capture;
     private bool capturing;
-    private string activeServer, draftServer;
+    private string activeServer, draftServer, draftReceiverId;
     private Text settingsMessage;
+    private string receiverId;
+    private readonly HttpClient receiverClient = ReceiverConnection.CreateClient(4);
     public bool NavigationLocked => busy || capturing;
     private bool positionLocked;
     public bool PositionLocked { get => capturing || (history != null && history.IsRemarking ? history.RemarkLocked : positionLocked || !probe.CameraActive || (history != null && history.IsOpen)); private set => positionLocked = value; }
@@ -36,6 +36,7 @@ public sealed class IssueReportForm : MonoBehaviour
     private string confirmedSnapshot, reportSnapshot;
     public string ConfirmedSnapshot => confirmedSnapshot;
     private Vector3 lockedPosition;
+    private IssueScanModel reportModel;
     private readonly string[] priorities = { "low", "medium", "high" };
 
     public void Initialize(Transform parent, ArProbe owner)
@@ -61,22 +62,28 @@ public sealed class IssueReportForm : MonoBehaviour
             if (history.Busy) return;
             history.Hide(); homeControls.SetActive(false); settingsPanel.SetActive(true);
         });
-        settingsPanel = NavigationPanel(parent, "设置", 650);
-        address = Field(settingsPanel.transform, "服务地址，如 http://电脑IP:8080", 490, 75, false);
-        activeServer = PlayerPrefs.GetString("arwork.server", "http://192.168.1.100:8080");
+        settingsPanel = NavigationPanel(parent, "设置", 760);
+        address = Field(settingsPanel.transform, "输入 PC 显示的地址，如 http://192.168.1.8:18088", 590, 85, false);
+        activeServer = PlayerPrefs.GetString("arwork.server", "http://127.0.0.1:18088");
+        receiverId = PlayerPrefs.GetString("arwork.receiver-id", "");
         address.text = activeServer;
         settingsMessage = Label(settingsPanel.transform, 27);
-        settingsMessage.rectTransform.offsetMin = new Vector2(25, 10);
-        settingsMessage.rectTransform.offsetMax = new Vector2(-25, -540);
-        test = ButtonAt(settingsPanel.transform, "保存并测试连接", 400, 0.03f, 0.97f, () => StartCoroutine(TestConnection()));
-        ButtonAt(settingsPanel.transform, "保存并返回首页", 310, 0.03f, 0.97f, () => { if (!busy && SaveAddress()) ShowHome(); });
-        ButtonAt(settingsPanel.transform, "取消", 225, 0.03f, 0.97f, () => {
+        settingsMessage.rectTransform.anchorMin = new Vector2(0.03f, 0);
+        settingsMessage.rectTransform.anchorMax = new Vector2(0.97f, 0);
+        settingsMessage.rectTransform.pivot = new Vector2(0.5f, 0);
+        settingsMessage.rectTransform.sizeDelta = new Vector2(0, 220);
+        settingsMessage.rectTransform.anchoredPosition = new Vector2(0, 330);
+        settingsMessage.text = "电脑启动后会显示手机连接地址与端口。手机和电脑需在同一局域网，输入完整地址后连接。";
+        test = ButtonAt(settingsPanel.transform, "连接并保存", 220, 0.03f, 0.97f, () => StartCoroutine(TestConnection()));
+        ButtonAt(settingsPanel.transform, "返回首页", 120, 0.03f, 0.97f, () => {
             if (busy) return; address.text = activeServer; ShowHome();
         });
         captureControls = NavigationPanel(parent, "采集操作", 170);
         ButtonAt(captureControls.transform, "返回首页", 25, 0.03f, 0.45f, () => { if (!NavigationLocked) ShowHome(); });
         capture = ButtonAt(captureControls.transform, "快照 / 下一步", 25, 0.5f, 0.97f, () => {
             if (!hasPosition || !probe.HasTrackedDraft) return;
+            try { reportModel = probe.FreezeIssueModel(); }
+            catch (Exception error) { Debug.LogWarning(error.Message); return; }
             lockedPosition = probe.CurrentPosition;
             TakeSnapshot(() => { reportSnapshot = confirmedSnapshot; PositionLocked = true; probe.LeaveCamera(); captureControls.SetActive(false); reportPanel.SetActive(true); RefreshControls(); });
         });
@@ -126,6 +133,7 @@ public sealed class IssueReportForm : MonoBehaviour
         local = gameObject.AddComponent<LocalReports>();
         local.Initialize(parent, () => activeServer, () => history.RefreshLocalRows(), ShowHome);
         RestorePending();
+        if (!string.IsNullOrEmpty(receiverId)) local.RememberReceiver(activeServer, receiverId);
         live.SetServer(activeServer);
         reportPanel.SetActive(false); settingsPanel.SetActive(false); captureControls.SetActive(false); previewPanel.SetActive(false);
         RefreshControls();
@@ -157,13 +165,13 @@ public sealed class IssueReportForm : MonoBehaviour
     public void MarkPositionSelected()
     {
         if (history != null && history.IsRemarking) history.MarkPositionSelected();
-        else { draftServer = activeServer; hasPosition = true; }
+        else { draftServer = activeServer; draftReceiverId = receiverId; hasPosition = true; }
     }
     public void ClearPosition() { if (history != null && history.IsRemarking) history.ClearPosition(); else { hasPosition = false; RefreshControls(); } }
 
     private void EditOrCancel()
     {
-        if (busy || draftServer != activeServer) return;
+        if (busy || draftServer != activeServer || draftReceiverId != receiverId) return;
         PositionLocked = false;
         message.text = "内容已保留，请点击表面调整位置。";
         reportPanel.SetActive(false); captureControls.SetActive(true); PositionLocked = false;
@@ -171,38 +179,45 @@ public sealed class IssueReportForm : MonoBehaviour
         RefreshControls();
     }
 
-    private bool SaveAddress()
+    private IEnumerator SelectReceiver(ReceiverInfo candidate)
     {
-        var value = address.text.Trim().TrimEnd('/');
-        if (!Uri.TryCreate(value, UriKind.Absolute, out var uri) ||
-            (uri.Scheme != "http" && uri.Scheme != "https") || uri.AbsolutePath != "/" ||
-            !string.IsNullOrEmpty(uri.Query) || !string.IsNullOrEmpty(uri.Fragment) || !string.IsNullOrEmpty(uri.UserInfo))
-        { settingsMessage.text = "地址格式有误，请填写 http://电脑局域网IP:8080。"; return false; }
-        address.text = value;
-        activeServer = value;
-        PlayerPrefs.SetString("arwork.server", value); PlayerPrefs.Save();
-        live.SetServer(value);
-        return true;
+        if (busy || history.Busy || history.IsRemarking) yield break;
+        busy = true; RefreshControls();
+        settingsMessage.text = "正在核对接收端身份…";
+        var task = ReceiverConnection.Verify(receiverClient, candidate.address, candidate.id);
+        while (!task.IsCompleted) yield return null;
+        if (task.IsFaulted || task.IsCanceled) settingsMessage.text = "连接失败：请核对电脑显示的 IP 和端口、同一 Wi-Fi 及电脑防火墙。原目的地和待上传资料保留。";
+        else if (history.Busy || history.IsRemarking || probe.CameraActive)
+            settingsMessage.text = "现场操作或保存正在进行，接收端切换已推迟，请稍后重试。";
+        else {
+            try {
+                var receiver = task.Result;
+                local.RememberReceiver(receiver.address, receiver.id);
+                if (receiver.id == receiverId && receiver.address != activeServer) {
+                    if (draftReceiverId == receiverId) draftServer = receiver.address;
+                    history.Readdress(activeServer, receiver.address);
+                    probe.ReaddressMarkers(activeServer, receiver.address);
+                }
+                activeServer = receiver.address; receiverId = receiver.id; address.text = activeServer;
+                PlayerPrefs.SetString("arwork.server", activeServer);
+                PlayerPrefs.SetString("arwork.receiver-id", receiverId); PlayerPrefs.Save();
+                live.SetServer(activeServer);
+                settingsMessage.text = "已连接：" + receiver.name + "\n" + activeServer + "\n其他电脑的待上传资料保持原目的地。";
+            } catch (Exception error) { settingsMessage.text = "保存接收端失败，请保留应用数据。"; Debug.LogException(error); }
+        }
+        busy = false; RefreshControls();
     }
 
     private IEnumerator TestConnection()
     {
-        if (busy || !SaveAddress()) yield break;
-        live.Refresh();
-        busy = true; RefreshControls(); settingsMessage.text = "正在测试连接…";
-        using (var request = UnityWebRequest.Get(address.text + "/health"))
-        {
-            request.timeout = 10;
-            yield return request.SendWebRequest();
-            bool healthy = false;
-            if (request.result == UnityWebRequest.Result.Success)
-            {
-                try { healthy = JsonUtility.FromJson<Health>(request.downloadHandler.text)?.data?.status == "ok"; } catch (ArgumentException) { }
-            }
-            settingsMessage.text = healthy
-                ? "连接成功。" : "连接失败，请检查服务地址、网络和电脑防火墙。";
+        if (busy) yield break;
+        var value = address.text.Trim().TrimEnd('/');
+        if (!Uri.TryCreate(value, UriKind.Absolute, out var uri) || uri.Scheme != "http" ||
+            uri.AbsolutePath != "/" || !string.IsNullOrEmpty(uri.Query) || !string.IsNullOrEmpty(uri.Fragment) || !string.IsNullOrEmpty(uri.UserInfo)) {
+            settingsMessage.text = "地址格式有误，请使用 http://电脑IP:端口。"; yield break;
         }
-        busy = false; RefreshControls();
+        // At a remembered address require the remembered identity; another service cannot silently replace it.
+        yield return SelectReceiver(new ReceiverInfo { address = value, id = value == activeServer && !string.IsNullOrEmpty(receiverId) ? receiverId : null });
     }
 
     private IEnumerator Submit()
@@ -211,19 +226,22 @@ public sealed class IssueReportForm : MonoBehaviour
 
         if (string.IsNullOrWhiteSpace(title.text)) { message.text = "请填写问题标题。"; yield break; }
         if (string.IsNullOrEmpty(reportSnapshot)) { message.text = "请返回现场拍摄并确认快照。"; yield break; }
+        if (reportModel == null) { message.text = "请返回扫描并重新选点。"; yield break; }
         var point = lockedPosition;
-        var payload = new ReportPayload { title = title.text.Trim(), description = description.text,
+        var payload = new ReportPayload { reportVersion = 2, model = reportModel, title = title.text.Trim(), description = description.text,
             snapshot = reportSnapshot, priority = priorities[priorityIndex], position = new IssueHistoryPanel.Position { x = point.x, y = point.y, z = point.z } };
         try {
-            var entry = local.Add(draftServer ?? activeServer, "/api/reports", JsonUtility.ToJson(payload));
+            var body = JsonUtility.ToJson(payload);
+            if (System.Text.Encoding.UTF8.GetByteCount(body) > 32 * 1024 * 1024) throw new InvalidOperationException("完整资料超过 32 MiB，请减少扫描范围后重试。");
+            var entry = local.Add(draftServer ?? activeServer, "/api/reports", body, frozen: true, receiverIdentity: draftReceiverId);
             probe.KeepQueuedMarker(entry.server, entry.key);
         } catch (Exception error) {
             message.text = "本地保存失败，图片和内容仍保留，请重试。"; Debug.LogException(error); yield break;
         }
         // The durable queue owns the complete request now; another capture is independent.
-        ClearSnapshot(); reportSnapshot = null;
+        ClearSnapshot(); reportSnapshot = null; reportModel = null;
         hasPosition = false; PositionLocked = false;
-        draftServer = null; title.text = ""; description.text = "";
+        draftServer = null; draftReceiverId = null; title.text = ""; description.text = "";
         message.text = "已保存到本地，待上传。";
         RefreshControls(); ShowHome();
     }
@@ -235,7 +253,7 @@ public sealed class IssueReportForm : MonoBehaviour
         submit.interactable = positionLocked && !busy;
         test.interactable = !busy;
         historyButton.interactable = !busy;
-        edit.interactable = !busy && draftServer == activeServer;
+        edit.interactable = !busy && draftServer == activeServer && draftReceiverId == receiverId;
         editLabel.text = "调整位置";
     }
 
@@ -253,14 +271,18 @@ public sealed class IssueReportForm : MonoBehaviour
         // Keep the confirmed photo with the in-memory draft when returning home.
         reportPanel.SetActive(false); captureControls.SetActive(false); previewPanel.SetActive(false);
         settingsPanel.SetActive(false); homeControls.SetActive(true);
-        history.Open(activeServer);
+        history.Open(activeServer, receiverId);
     }
 
     private void BeginReport()
     {
         if (history.Busy) return;
+        if (string.IsNullOrEmpty(receiverId)) {
+            history.Hide(); homeControls.SetActive(false); settingsPanel.SetActive(true);
+            settingsMessage.text = "请先输入 PC 显示的地址并连接；保存后可以离线采集。"; return;
+        }
         history.Hide(); homeControls.SetActive(false);
-        if (draftServer != null && draftServer != activeServer)
+        if (draftServer != null && (draftServer != activeServer || draftReceiverId != receiverId))
         {
             reportPanel.SetActive(true); message.text = "当前草稿属于 " + draftServer + "，提交将发送至该服务。可返回设置切回原服务继续采集。";
             RefreshControls(); return;
@@ -303,6 +325,8 @@ public sealed class IssueReportForm : MonoBehaviour
         }
         finally { probe.SetSnapshotMode(false); canvas.enabled = true; }
     }
+
+    private void OnDestroy() { receiverClient.Dispose(); }
 
     private void ClearSnapshot()
     {

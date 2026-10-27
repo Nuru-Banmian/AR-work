@@ -26,41 +26,50 @@ type Position struct {
 }
 
 type Issue struct {
-	SnapshotURL string    `json:"snapshotUrl,omitempty"`
-	ID          string    `json:"id"`
-	Title       string    `json:"title"`
-	Description string    `json:"description"`
-	Priority    string    `json:"priority"`
-	Status      string    `json:"status"`
-	Position    Position  `json:"position"`
-	CreatedAt   time.Time `json:"createdAt"`
-	UpdatedAt   time.Time `json:"updatedAt"`
+	SceneRevision string    `json:"sceneRevision,omitempty"`
+	ModelURL      string    `json:"modelUrl,omitempty"`
+	SnapshotURL   string    `json:"snapshotUrl,omitempty"`
+	ID            string    `json:"id"`
+	Title         string    `json:"title"`
+	Description   string    `json:"description"`
+	Priority      string    `json:"priority"`
+	Status        string    `json:"status"`
+	Position      Position  `json:"position"`
+	CreatedAt     time.Time `json:"createdAt"`
+	UpdatedAt     time.Time `json:"updatedAt"`
 }
 
 type api struct {
 	mu          sync.Mutex
+	deleted     map[string]bool
 	path        string
+	models      map[string]json.RawMessage
 	media       map[string][]byte
 	issues      []Issue
 	origins     map[string]bool
+	remarks     map[string]remarkReceipt
 	requests    map[string]creation
 	subscribers map[chan struct{}]bool
 }
 
 // The original result is retained even when the issue's status changes later.
 type creation struct {
-	Fingerprint string `json:"fingerprint"`
-	Result      Issue  `json:"result"`
+	Fingerprint string `json:"fingerprint,omitempty"`
+	Result      *Issue `json:"result,omitempty"`
+	IssueID     string `json:"issueId,omitempty"`
 }
 
 type snapshot struct {
-	Media    map[string][]byte   `json:"media,omitempty"`
-	Issues   []Issue             `json:"issues"`
-	Requests map[string]creation `json:"requests"`
+	Deleted  map[string]bool            `json:"deleted,omitempty"`
+	Models   map[string]json.RawMessage `json:"models,omitempty"`
+	Media    map[string][]byte          `json:"media,omitempty"`
+	Issues   []Issue                    `json:"issues"`
+	Requests map[string]creation        `json:"requests"`
+	Remarks  map[string]remarkReceipt   `json:"remarks,omitempty"`
 }
 
 func newAPI(path, allowedOrigins string) (http.Handler, error) {
-	a := &api{media: map[string][]byte{}, path: path, issues: []Issue{}, origins: map[string]bool{}, requests: map[string]creation{}, subscribers: map[chan struct{}]bool{}}
+	a := &api{deleted: map[string]bool{}, remarks: map[string]remarkReceipt{}, models: map[string]json.RawMessage{}, media: map[string][]byte{}, path: path, issues: []Issue{}, origins: map[string]bool{}, requests: map[string]creation{}, subscribers: map[chan struct{}]bool{}}
 	for _, origin := range strings.Split(allowedOrigins, ",") {
 		a.origins[strings.TrimSpace(origin)] = true
 	}
@@ -73,6 +82,15 @@ func newAPI(path, allowedOrigins string) (http.Handler, error) {
 			var stored snapshot
 			err = json.Unmarshal(data, &stored)
 			a.issues = stored.Issues
+			if stored.Deleted != nil {
+				a.deleted = stored.Deleted
+			}
+			if stored.Remarks != nil {
+				a.remarks = stored.Remarks
+			}
+			if stored.Models != nil {
+				a.models = stored.Models
+			}
 			if stored.Media != nil {
 				a.media = stored.Media
 			}
@@ -87,6 +105,9 @@ func newAPI(path, allowedOrigins string) (http.Handler, error) {
 			return nil, errors.New("data file must contain an issue array")
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	if err := cleanupStoredTemps(path, snapshot{Issues: a.issues, Deleted: a.deleted}); err != nil {
 		return nil, err
 	}
 	return a, nil
@@ -111,8 +132,9 @@ func (a *api) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		w.Header().Set("Access-Control-Allow-Origin", origin)
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Idempotency-Key")
+		w.Header().Set("Access-Control-Expose-Headers", "X-ARWork-Receiver")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Idempotency-Key, X-ARWork-Receiver")
 	}
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusNoContent)
@@ -138,6 +160,11 @@ func (a *api) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		case "GET":
 			a.mu.Lock()
 			issues := append([]Issue{}, a.issues...)
+			deletedIds := make([]string, 0, len(a.deleted))
+			for id := range a.deleted {
+				deletedIds = append(deletedIds, id)
+			}
+			sort.Strings(deletedIds)
 			a.mu.Unlock()
 			sort.Slice(issues, func(i, j int) bool {
 				if issues[i].CreatedAt.Equal(issues[j].CreatedAt) {
@@ -145,7 +172,7 @@ func (a *api) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				}
 				return issues[i].CreatedAt.After(issues[j].CreatedAt)
 			})
-			respond(w, 200, map[string]any{"data": issues})
+			respond(w, 200, map[string]any{"data": issues, "deletedIds": deletedIds})
 		case "POST":
 			a.create(w, r)
 		default:
@@ -161,6 +188,14 @@ func (a *api) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *api) issue(w http.ResponseWriter, r *http.Request) {
+	if strings.HasSuffix(r.URL.Path, "/position") {
+		a.replacePosition(w, r)
+		return
+	}
+	if strings.HasSuffix(r.URL.Path, "/model") {
+		a.readModel(w, r)
+		return
+	}
 	if strings.HasSuffix(r.URL.Path, "/snapshot") {
 		a.readSnapshot(w, r)
 		return
@@ -172,6 +207,10 @@ func (a *api) issue(w http.ResponseWriter, r *http.Request) {
 	position := len(parts) == 2 && parts[0] != "" && parts[1] == "position"
 	if !detail && !status && !content && !position {
 		fail(w, 404, "not_found", "Endpoint not found")
+		return
+	}
+	if detail && r.Method == "DELETE" {
+		a.deleteIssue(w, r, parts[0])
 		return
 	}
 	if (detail && r.Method != "GET") || ((status || content || position) && r.Method != "PATCH") {
@@ -222,67 +261,19 @@ func (a *api) issue(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	var replacement []byte
-	var location struct {
-		Snapshot string                      `json:"snapshot"`
-		Position *struct{ X, Y, Z *float64 } `json:"position"`
-	}
-	if position {
-		body, readErr := io.ReadAll(http.MaxBytesReader(w, r.Body, 12*1024*1024))
-		if readErr != nil {
-			fail(w, 400, "invalid_argument", "Request body is too large")
-			return
-		}
-		decoder := json.NewDecoder(bytes.NewReader(body))
-		decoder.DisallowUnknownFields()
-		if err := decoder.Decode(&location); err != nil {
-			fail(w, 400, "invalid_argument", "Body must contain position{x,y,z} only")
-			return
-		}
-		if err := decoder.Decode(new(any)); err != io.EOF {
-			fail(w, 400, "invalid_argument", "Body must contain one JSON object")
-			return
-		}
-		if location.Snapshot == "" && len(body) > 64*1024 {
-			fail(w, 400, "invalid_argument", "Position request without snapshot must be at most 64 KiB")
-			return
-		}
-		if location.Position == nil || location.Position.X == nil || location.Position.Y == nil || location.Position.Z == nil {
-			fail(w, 400, "invalid_argument", "position.x, position.y and position.z are required finite numbers")
-			return
-		}
-		for _, number := range []*float64{location.Position.X, location.Position.Y, location.Position.Z} {
-			if math.IsNaN(*number) || math.IsInf(*number, 0) {
-				fail(w, 400, "invalid_argument", "position coordinates must be finite numbers")
-				return
-			}
-		}
-	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if a.deleted[parts[0]] {
+		deletedIssue(w, parts[0])
+		return
+	}
 	for index, issue := range a.issues {
 		if issue.ID != parts[0] {
 			continue
 		}
-		media := a.media
-		if position {
-			var err error
-			replacement, err = validateSnapshot(location.Snapshot, issue.SnapshotURL != "")
-			if err != nil {
-				fail(w, 400, "invalid_snapshot", err.Error())
-				return
-			}
-			if len(replacement) > 0 {
-				media = cloneMedia(a.media)
-				media[issue.ID] = replacement
-				issue.SnapshotURL = "/api/issues/" + issue.ID + "/snapshot"
-			}
-		}
-		if status || content || position {
+		if status || content {
 			if status {
 				issue.Status = input.Status
-			} else if position {
-				issue.Position = Position{*location.Position.X, *location.Position.Y, *location.Position.Z}
 			} else {
 				issue.Title = strings.TrimSpace(*edit.Title)
 				issue.Description = *edit.Description
@@ -291,13 +282,12 @@ func (a *api) issue(w http.ResponseWriter, r *http.Request) {
 			issue.UpdatedAt = time.Now().UTC()
 			next := append([]Issue{}, a.issues...)
 			next[index] = issue
-			if err := saveIssues(a.path, snapshot{Issues: next, Requests: a.requests, Media: media}); err != nil {
+			if err := saveIssues(a.path, snapshot{Deleted: a.deleted, Issues: next, Requests: a.requests, Media: a.media, Models: a.models, Remarks: a.remarks}); err != nil {
 				log.Printf("save issue: %v", err)
 				fail(w, 500, "storage_error", "Could not save issue; data was not changed")
 				return
 			}
 			a.issues = next
-			a.media = media
 			a.notifySaved()
 		}
 		respond(w, 200, map[string]any{"data": issue})
@@ -308,13 +298,15 @@ func (a *api) issue(w http.ResponseWriter, r *http.Request) {
 
 func (a *api) create(w http.ResponseWriter, r *http.Request) {
 	var input struct {
-		Snapshot    string                      `json:"snapshot"`
-		Title       string                      `json:"title"`
-		Description string                      `json:"description"`
-		Priority    string                      `json:"priority"`
-		Position    *struct{ X, Y, Z *float64 } `json:"position"`
+		ReportVersion int                         `json:"reportVersion"`
+		Model         *ScanModel                  `json:"model"`
+		Snapshot      string                      `json:"snapshot"`
+		Title         string                      `json:"title"`
+		Description   string                      `json:"description"`
+		Priority      string                      `json:"priority"`
+		Position      *struct{ X, Y, Z *float64 } `json:"position"`
 	}
-	body, readErr := io.ReadAll(http.MaxBytesReader(w, r.Body, 12*1024*1024))
+	body, readErr := io.ReadAll(http.MaxBytesReader(w, r.Body, 32*1024*1024))
 	if readErr != nil {
 		fail(w, 400, "invalid_argument", "Request body is too large")
 		return
@@ -352,9 +344,13 @@ func (a *api) create(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	photo, err := validateSnapshot(input.Snapshot, r.URL.Path == "/api/reports")
+	photo, err := validateSnapshot(input.Snapshot, r.URL.Path == "/api/reports" || input.ReportVersion == 2)
 	if err != nil {
 		fail(w, 400, "invalid_snapshot", err.Error())
+		return
+	}
+	if err := validateModel(input.Model, input.ReportVersion); err != nil {
+		fail(w, 400, "invalid_model", err.Error())
 		return
 	}
 	id := make([]byte, 16)
@@ -368,6 +364,9 @@ func (a *api) create(w http.ResponseWriter, r *http.Request) {
 	if len(photo) > 0 {
 		issue.SnapshotURL = "/api/issues/" + issue.ID + "/snapshot"
 	}
+	if input.Model != nil {
+		issue.ModelURL = "/api/issues/" + issue.ID + "/model"
+	}
 	// Signed zero is the same location and must not produce a different replay fingerprint.
 	for _, coordinate := range []*float64{&issue.Position.X, &issue.Position.Y, &issue.Position.Z} {
 		if *coordinate == 0 {
@@ -379,8 +378,9 @@ func (a *api) create(w http.ResponseWriter, r *http.Request) {
 		Description string
 		Priority    string
 		Position    Position
-		Snapshot    string `json:",omitempty"`
-	}{issue.Title, issue.Description, issue.Priority, issue.Position, input.Snapshot})
+		Snapshot    string     `json:",omitempty"`
+		Model       *ScanModel `json:",omitempty"`
+	}{issue.Title, issue.Description, issue.Priority, issue.Position, input.Snapshot, input.Model})
 	digest := sha256.Sum256(canonical)
 	fingerprint := hex.EncodeToString(digest[:])
 	key := r.Header.Get("Idempotency-Key")
@@ -391,10 +391,23 @@ func (a *api) create(w http.ResponseWriter, r *http.Request) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if previous, ok := a.requests[key]; key != "" && ok {
+		if previous.Result == nil {
+			deletedIssue(w, previous.IssueID)
+			return
+		}
 		if previous.Fingerprint != fingerprint {
 			fail(w, 409, "idempotency_conflict", "This key was already used with different content")
 		} else {
-			respond(w, 200, map[string]any{"data": previous.Result})
+			result := *previous.Result
+			// After a complete scene replacement, stable attachment URLs refer to
+			// the current scene. Do not combine them with an old creation position.
+			for _, current := range a.issues {
+				if current.ID == result.ID && current.SceneRevision != "" && current.ModelURL != "" {
+					result = current
+					break
+				}
+			}
+			respond(w, 200, map[string]any{"data": result})
 		}
 		return
 	}
@@ -404,13 +417,17 @@ func (a *api) create(w http.ResponseWriter, r *http.Request) {
 		nextRequests[k] = value
 	}
 	if key != "" {
-		nextRequests[key] = creation{fingerprint, issue}
+		nextRequests[key] = creation{Fingerprint: fingerprint, Result: &issue}
+	}
+	nextModels := cloneModels(a.models)
+	if input.Model != nil {
+		nextModels[issue.ID], _ = json.Marshal(input.Model)
 	}
 	nextMedia := cloneMedia(a.media)
 	if len(photo) > 0 {
 		nextMedia[issue.ID] = photo
 	}
-	if err := saveIssues(a.path, snapshot{Issues: next, Requests: nextRequests, Media: nextMedia}); err != nil {
+	if err := saveIssues(a.path, snapshot{Deleted: a.deleted, Issues: next, Requests: nextRequests, Media: nextMedia, Models: nextModels, Remarks: a.remarks}); err != nil {
 		log.Printf("save issues: %v", err)
 		fail(w, 500, "storage_error", "Could not save issue; data was not changed")
 		return
@@ -418,6 +435,7 @@ func (a *api) create(w http.ResponseWriter, r *http.Request) {
 	a.issues = next
 	a.requests = nextRequests
 	a.media = nextMedia
+	a.models = nextModels
 	a.notifySaved()
 	respond(w, 201, map[string]any{"data": issue})
 }
@@ -427,7 +445,10 @@ func saveIssues(path string, stored snapshot) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return err
 	}
-	file, err := os.CreateTemp(filepath.Dir(path), ".issues-*.tmp")
+	if err := cleanupStoredTemps(path, stored); err != nil {
+		return err
+	}
+	file, err := os.CreateTemp(filepath.Dir(path), ".issues-"+filepath.Base(path)+"-*.tmp")
 	if err != nil {
 		return err
 	}
@@ -454,11 +475,7 @@ func env(key, fallback string) string {
 }
 
 func main() {
-	handler, err := newAPI(env("ARWORK_DATA", "data/issues.json"), env("ARWORK_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173"))
-	if err != nil {
-		log.Fatalf("Cannot open issue data: %v", err)
+	if err := runReceiver(); err != nil {
+		log.Fatal(err)
 	}
-	server := &http.Server{Addr: env("ARWORK_ADDR", ":8080"), Handler: handler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 20 * time.Second, WriteTimeout: 20 * time.Second, IdleTimeout: 60 * time.Second}
-	log.Printf("AR Work listening on %s", server.Addr)
-	log.Fatal(server.ListenAndServe())
 }

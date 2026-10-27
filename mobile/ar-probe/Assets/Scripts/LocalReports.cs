@@ -36,7 +36,7 @@ public sealed class LocalReports : MonoBehaviour
             queue = new ReportQueue(Path.Combine(Application.persistentDataPath, "report-queue-v1"));
             queue.List(server()); // fail closed on corrupt data
             sender = new ReportQueueSender(queue);
-            client = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
+            client = ReceiverConnection.CreateClient(15);
         } catch (Exception error) { failure = "本地队列读取失败，请保留应用数据。"; Debug.LogException(error); }
         panel = new GameObject("本地问题详情", typeof(RectTransform), typeof(Image));
         panel.transform.SetParent(parent, false);
@@ -75,11 +75,38 @@ public sealed class LocalReports : MonoBehaviour
         panel.SetActive(false);
     }
 
-    public ReportQueue.Entry Add(string address, string endpoint, string body, string key = null, bool frozen = false)
+    public ReportQueue.Entry Add(string address, string endpoint, string body, string key = null, bool frozen = false, string receiverIdentity = null)
     {
         if (failure != null) throw new IOException(failure);
-        var entry = queue.Add(address, endpoint, body, key, frozen);
+        var entry = queue.Add(address, endpoint, body, key, frozen, receiverIdentity);
         nextAttempt = Time.realtimeSinceStartup + 1; changed(); return entry;
+    }
+
+    public void RetireSyncedScene(string address, string issueId)
+    {
+        if (failure != null) throw new IOException(failure);
+        queue.ForgetSynced(address, issueId);
+        changed();
+    }
+
+    public void RememberReceiver(string address, string id)
+    {
+        if (failure != null) throw new IOException(failure);
+        queue.RememberReceiver(address, id);
+        nextAttempt = 0;
+    }
+
+    public string ReceiverIdentity(string address) => queue?.ReceiverAt(address);
+
+    public void ReconcileDeleted(string address, string[] deletedIds)
+    {
+        if (failure != null) throw new IOException(failure);
+        queue.ReconcileDeleted(address, deletedIds);
+        foreach (var entry in queue.List(address).Where(item => item.state == "deleted")) {
+            GetComponent<ArProbe>()?.RetireIssueMarker(address, entry.serverId);
+            GetComponent<ArProbe>()?.RetireIssueMarker(address, "local-" + entry.key);
+            if (selected == entry.key) { Hide(); GetComponent<IssueHistoryPanel>()?.NotifyDeletedIssue(address, entry.serverId); }
+        }
     }
 
     public void RenderRows(Transform rows, IssueHistoryPanel.Issue[] remote)
@@ -89,7 +116,12 @@ public sealed class LocalReports : MonoBehaviour
             label.gameObject.AddComponent<LayoutElement>().preferredHeight = 100; return;
         }
         try {
+            // A creation receipt may arrive after a remark. Query convergence also
+            // retires that late acknowledged copy; unrelated pending data stays intact.
+            foreach (var issue in remote.Where(item => !string.IsNullOrEmpty(item.sceneRevision)))
+                queue.ForgetSynced(server(), issue.id);
             foreach (var entry in queue.List(server())) {
+                if (entry.state == "deleted") continue;
                 if (entry.state == "synced" && remote.Any(issue => issue.id == entry.serverId)) continue;
                 var payload = JsonUtility.FromJson<ReportPayload>(entry.body);
                 var button = IssueReportForm.ButtonAt(rows, payload.title + "\n" + State(entry) + " · " + ProcessingState(entry) +
@@ -101,7 +133,7 @@ public sealed class LocalReports : MonoBehaviour
     }
 
     public static string State(ReportQueue.Entry entry) => entry.state == "pending" ? "待上传" :
-        entry.state == "synced" ? "已同步" : entry.state == "uploading" ? "上传中 / 中断后将重试" : "上传失败";
+        entry.state == "synced" ? "已同步" : entry.state == "uploading" ? (entry.stage ?? "上传中 / 中断后将重试") : "上传失败";
 
     private static string SyncTime(ReportQueue.Entry entry) => entry.state != "synced" ? "尚未同步" :
         string.IsNullOrEmpty(entry.syncedAt) ? "未知（旧回执）" : InspectionUi.Time(entry.syncedAt);
@@ -116,7 +148,9 @@ public sealed class LocalReports : MonoBehaviour
     private void Show(string key)
     {
         try {
-            var entry = queue.Get(key); var payload = JsonUtility.FromJson<ReportPayload>(entry.body);
+            var entry = queue.Get(key);
+            if (entry.state == "deleted") { Hide(); closed(); return; }
+            var payload = JsonUtility.FromJson<ReportPayload>(entry.body);
             selected = key; title.text = payload.title; description.text = payload.description;
             priorityIndex = Array.IndexOf(priorities, payload.priority); SetPriority();
             title.interactable = description.interactable = priority.interactable = save.interactable = !entry.frozen;
@@ -167,6 +201,11 @@ public sealed class LocalReports : MonoBehaviour
             if (this == null) return;
             foreach (var entry in queue.List(uploadServer).Where(item => item.state == "synced"))
                 GetComponent<ArProbe>()?.AcknowledgeQueuedMarker(uploadServer, entry.key, entry.serverId);
+            foreach (var entry in queue.List(uploadServer).Where(item => item.state == "deleted")) {
+                GetComponent<ArProbe>()?.RetireIssueMarker(uploadServer, "local-" + entry.key);
+                GetComponent<ArProbe>()?.RetireIssueMarker(uploadServer, entry.serverId);
+                if (selected == entry.key) { Hide(); GetComponent<IssueHistoryPanel>()?.NotifyDeletedIssue(uploadServer, entry.serverId); }
+            }
             nextAttempt = Time.realtimeSinceStartup + (attempted ? 2 : 5);
             if (IsOpen && !save.interactable) Show(selected);
             if (attempted) changed();

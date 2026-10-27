@@ -1,4 +1,5 @@
 export type Issue = {
+  modelUrl?: string
   snapshotUrl?: string
   id: string
   title: string
@@ -56,4 +57,14 @@ export async function updateContent(address: string, id: string, content: Pick<I
   if (!response.ok) throw new Error(`内容保存失败（${response.status}），请重试`)
   if (!result.data || result.data.id !== id) throw new Error('保存结果无效，请刷新确认')
   return result.data
+}
+
+export async function deleteIssue(address: string, id: string, title: string): Promise<void> {
+  const response = await fetch(`${serverAddress(address)}/api/issues/${encodeURIComponent(id)}`, {
+    method: 'DELETE', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title }), signal: AbortSignal.timeout(10000),
+  })
+  const result = await response.json()
+  if (!response.ok) throw new Error(`删除失败（${response.status}），请刷新核对标题后重试`)
+  if (result.data?.id !== id) throw new Error('删除回执无效，请刷新核对')
 }

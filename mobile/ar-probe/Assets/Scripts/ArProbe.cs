@@ -23,6 +23,7 @@ public sealed class ArProbe : MonoBehaviour
     private bool cameraFrameSeen;
     private double latestCameraTimestamp;
     private LocalSurfaceScanner surfaceScanner;
+    private IssueScanModel selectedIssueModel;
     private Transform safeUi;
     private GameObject originRoot, cameraHud;
     private Coroutine starting;
@@ -299,6 +300,8 @@ public sealed class ArProbe : MonoBehaviour
         var newAnchor = root.AddComponent<ARAnchor>();
         if (newAnchor.trackableId == TrackableId.invalidId || newAnchor.trackingState != TrackingState.Tracking)
         { Destroy(root); notice.text = "未能固定标记，请恢复跟踪后重试。"; return; }
+        try { selectedIssueModel = surfaceScanner.FreezeIssue(pose.position, pose.rotation * Vector3.up); }
+        catch (System.Exception error) { Destroy(root); notice.text = error.Message; return; }
         PlaceMarkerAt(newAnchor, pose.position, source);
     }
 
@@ -325,21 +328,48 @@ public sealed class ArProbe : MonoBehaviour
 
     internal static Mesh CreateMarkerMesh()
     {
-        var mesh=new Mesh { name="Pointed triangular marker" };
-        // Local +Y is the outward surface normal. The apex at zero touches the selected point.
-        mesh.vertices=new[] {Vector3.zero,new Vector3(-0.01f,0.025f,-0.006f),
-            new Vector3(0.01f,0.025f,-0.006f),new Vector3(0,0.025f,0.012f)};
-        mesh.triangles=new[] {0,1,2,0,2,3,0,3,1,1,3,2};
+        const int segments=32;
+        const float radius=0.01f, height=0.025f;
+        var mesh=new Mesh { name="Pointed round cone marker" };
+        // The apex is local zero; +Y is the outward surface normal.
+        var vertices=new Vector3[segments+2];
+        var triangles=new int[segments*6];
+        vertices[segments+1]=new Vector3(0,height,0);
+        for (int i=0;i<segments;i++) {
+            float angle=2*Mathf.PI*i/segments;
+            vertices[i+1]=new Vector3(radius*Mathf.Cos(angle),height,radius*Mathf.Sin(angle));
+            int current=i+1, next=(i+1)%segments+1, face=i*6;
+            triangles[face]=0; triangles[face+1]=current; triangles[face+2]=next;
+            triangles[face+3]=segments+1; triangles[face+4]=next; triangles[face+5]=current;
+        }
+        mesh.vertices=vertices; mesh.triangles=triangles;
         mesh.RecalculateNormals(); mesh.RecalculateBounds(); return mesh;
     }
+
     private void OnDestroy()
     {
         if (arCameraManager != null) arCameraManager.frameReceived-=OnCameraFrame;
         if (pointedMarkerMesh != null) Destroy(pointedMarkerMesh);
     }
 
+    public IssueScanModel FreezeIssueModel() {
+        if (selectedIssueModel == null || !HasTrackedDraft) throw new System.InvalidOperationException("请在当前扫描表面重新选点。");
+        return JsonUtility.FromJson<IssueScanModel>(JsonUtility.ToJson(selectedIssueModel));
+    }
     public Vector3 CurrentPosition => markerAnchor != null ? markerAnchor.transform.position : lastPosition;
     public bool HasTrackedDraft => markerAnchor != null && markerAnchor.trackingState == TrackingState.Tracking;
+
+    public void ReaddressMarkers(string previous, string current)
+    {
+        foreach (var key in new System.Collections.Generic.List<string>(savedMarkers.Keys)) {
+            if (!key.StartsWith(previous + "/", System.StringComparison.Ordinal)) continue;
+            savedMarkers[current + key.Substring(previous.Length)] = savedMarkers[key]; savedMarkers.Remove(key);
+        }
+        foreach (var key in new System.Collections.Generic.List<string>(markerStatuses.Keys)) {
+            if (!key.StartsWith(previous + "/", System.StringComparison.Ordinal)) continue;
+            markerStatuses[current + key.Substring(previous.Length)] = markerStatuses[key]; markerStatuses.Remove(key);
+        }
+    }
 
     public void KeepQueuedMarker(string server, string key)
     {
@@ -399,6 +429,25 @@ public sealed class ArProbe : MonoBehaviour
         var color = value == "resolved" ? new Color(0.1f, 0.9f, 0.3f) :
             value == "in_progress" ? new Color(0.15f, 0.5f, 1f) : new Color(1f, 0.4f, 0.05f);
         SetMarkerColor(anchor.GetComponentInChildren<Renderer>(), color);
+    }
+
+    public void RetireIssueMarker(string server, string id)
+    {
+        var key = server + "/" + id;
+        if (savedMarkers.TryGetValue(key, out var anchor) && anchor != null) Destroy(anchor.gameObject);
+        savedMarkers.Remove(key); markerStatuses.Remove(key);
+    }
+
+    public void RemoveDeletedIssueMarkers(string server, string[] ids)
+    {
+        var keys = new HashSet<string>(savedMarkers.Keys);
+        keys.UnionWith(markerStatuses.Keys);
+        foreach (var key in keys) {
+            if (!key.StartsWith(server + "/", System.StringComparison.Ordinal)) continue;
+            var id = key.Substring(server.Length + 1);
+            if (!id.StartsWith("local-", System.StringComparison.Ordinal) && System.Array.IndexOf(ids, id) >= 0)
+                RetireIssueMarker(server, id);
+        }
     }
 
     public void BeginRemark()
