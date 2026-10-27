@@ -55,8 +55,9 @@ public sealed class IssueReportForm : MonoBehaviour
         live = gameObject.AddComponent<IssueLiveUpdates>();
         live.Initialize(parent, probe, history);
         homeControls = NavigationPanel(parent, "首页入口", 120);
-        historyButton = ButtonAt(homeControls.transform, "新增问题", 25, 0.03f, 0.48f, BeginReport);
-        ButtonAt(homeControls.transform, "设置", 25, 0.52f, 0.97f, () => {
+        ButtonAt(homeControls.transform, "扫描模型", 45, 0.35f, 0.65f, () => probe.OpenSavedScans());
+        historyButton = ButtonAt(homeControls.transform, "新增问题", 45, 0.03f, 0.33f, BeginReport);
+        ButtonAt(homeControls.transform, "设置", 45, 0.67f, 0.97f, () => {
             if (history.Busy) return;
             history.Hide(); homeControls.SetActive(false); settingsPanel.SetActive(true);
         });
@@ -67,14 +68,6 @@ public sealed class IssueReportForm : MonoBehaviour
         settingsMessage = Label(settingsPanel.transform, 27);
         settingsMessage.rectTransform.offsetMin = new Vector2(25, 10);
         settingsMessage.rectTransform.offsetMax = new Vector2(-25, -540);
-        Button depth = null;
-        depth = ButtonAt(settingsPanel.transform, probe.DepthAssistanceEnabled ? "深度辅助：开" : "深度辅助：关", 140, 0.03f, 0.97f, () => {
-            probe.SetDepthAssistance(!probe.DepthAssistanceEnabled);
-            depth.GetComponentInChildren<Text>().text = probe.DepthAssistanceEnabled ? "深度辅助：开" : "深度辅助：关";
-            settingsMessage.text = probe.DepthAssistanceEnabled
-                ? "下次采集使用深度辅助；不支持时仍使用平面。发热或卡顿时可关闭。"
-                : "已关闭深度辅助，采集使用地面或墙面检测。";
-        });
         test = ButtonAt(settingsPanel.transform, "保存并测试连接", 400, 0.03f, 0.97f, () => StartCoroutine(TestConnection()));
         ButtonAt(settingsPanel.transform, "保存并返回首页", 310, 0.03f, 0.97f, () => { if (!busy && SaveAddress()) ShowHome(); });
         ButtonAt(settingsPanel.transform, "取消", 225, 0.03f, 0.97f, () => {
@@ -128,7 +121,7 @@ public sealed class IssueReportForm : MonoBehaviour
         textRect.anchorMin = Vector2.zero; textRect.anchorMax = new Vector2(1, 0);
         textRect.pivot = new Vector2(0.5f, 0); textRect.sizeDelta = new Vector2(-50, 155);
         textRect.anchoredPosition = new Vector2(0, 10);
-        message.text = "先点击地面或墙面选点，再填写问题。";
+        message.text = "先扫描物品并暂停，再点击实物位置放标记。";
         ButtonAt(rect, "返回首页（保留当前草稿）", 650, 0.03f, 0.97f, () => { if (!NavigationLocked) ShowHome(); });
         local = gameObject.AddComponent<LocalReports>();
         local.Initialize(parent, () => activeServer, () => history.RefreshLocalRows(), ShowHome);
@@ -278,12 +271,12 @@ public sealed class IssueReportForm : MonoBehaviour
 
     private void Update()
     {
-        if (capture != null) capture.interactable = !capturing && hasPosition && probe.HasTrackedDraft;
+        if (capture != null) capture.interactable = !capturing && hasPosition && probe.HasTrackedDraft && !probe.SurfaceInteractionActive;
     }
 
     public void TakeSnapshot(Action confirmed)
     {
-        if (capturing || !probe.CameraActive || !probe.HasTrackedDraft ||
+        if (capturing || !probe.CameraActive || !probe.HasTrackedDraft || probe.SurfaceInteractionActive ||
             UnityEngine.XR.ARFoundation.ARSession.state != UnityEngine.XR.ARFoundation.ARSessionState.SessionTracking) return;
         snapshotConfirmed = confirmed; StartCoroutine(Capture());
     }
