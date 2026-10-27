@@ -1,37 +1,41 @@
-import { lazy, Suspense, useEffect, useState } from 'react'
-import { errorMessage, listIssues, serverAddress, updateStatus, updateContent, type Issue } from './api'
+import { lazy, Suspense, useEffect, useRef, useState } from 'react'
+import { deleteIssue, errorMessage, listIssues, serverAddress, updateStatus, updateContent, type Issue } from './api'
 import './App.css'
 const ModelViewer = lazy(() => import('./ModelViewer').then(module => ({ default: module.ModelViewer })))
 
 const priorityNames = { low: '低', medium: '中', high: '高' }
 const statusNames = { open: '待处理', in_progress: '处理中', resolved: '已解决' }
 
-function IssueCard({ issue, address, onSaved }: { issue: Issue; address: string; onSaved: () => void }) {
+function IssueCard({ issue, address, onSaved, onDeleted }: { issue: Issue; address: string; onSaved: () => void; onDeleted: () => void }) {
   const [draft, setDraft] = useState<Pick<Issue, 'title' | 'description' | 'priority'> | null>(null)
   const [expanded, setExpanded] = useState(false)
   const [failedPhoto, setFailedPhoto] = useState('')
   const [imageRetry, setImageRetry] = useState(0)
   const [saving, setSaving] = useState(false)
   const [showModel, setShowModel] = useState(false)
+  const [confirmDelete, setConfirmDelete] = useState(false)
+  const [confirmedTitle, setConfirmedTitle] = useState('')
+  const operation = useRef(false)
   const photo = `${serverAddress(address)}/api/issues/${encodeURIComponent(issue.id)}/snapshot?v=${encodeURIComponent(issue.updatedAt)}&retry=${imageRetry}`
   const imageError = failedPhoto === photo
 
   async function saveContent(event: React.FormEvent) {
     event.preventDefault()
-    if (!draft || saving) return
+    if (!draft || operation.current) return
     if (!draft.title.trim()) { setError('请填写问题标题'); return }
-    setSaving(true); setError(''); setMessage('')
+    operation.current = true; setSaving(true); setError(''); setMessage('')
     try {
       await updateContent(address, issue.id, { ...draft, title: draft.title.trim() })
       setDraft(null); onSaved(); setMessage('内容已保存')
     } catch (reason) { setError(`保存失败：${errorMessage(reason)}。草稿已保留，可重试。`) }
-    finally { setSaving(false) }
+    finally { operation.current = false; setSaving(false) }
   }
   const [message, setMessage] = useState('')
   const [error, setError] = useState('')
 
   async function changeStatus(status: Issue['status']) {
-    if (saving || status === issue.status) return
+    if (operation.current || status === issue.status) return
+    operation.current = true
     setSaving(true)
     setError('')
     setMessage('')
@@ -41,7 +45,15 @@ function IssueCard({ issue, address, onSaved }: { issue: Issue; address: string;
       setMessage('状态已保存')
     } catch (reason) {
       setError(`保存失败：${errorMessage(reason)}。可重试或刷新确认。`)
-    } finally { setSaving(false) }
+    } finally { operation.current = false; setSaving(false) }
+  }
+
+  async function permanentlyDelete() {
+    if (operation.current || confirmedTitle !== issue.title) return
+    operation.current = true; setSaving(true); setError(''); setMessage('')
+    try { await deleteIssue(address, issue.id, confirmedTitle); onDeleted() }
+    catch (reason) { setError(`${errorMessage(reason)}。记录和输入已保留；结果待确认时可刷新核对。`) }
+    finally { operation.current = false; setSaving(false) }
   }
 
   return <article>
@@ -62,14 +74,24 @@ function IssueCard({ issue, address, onSaved }: { issue: Issue; address: string;
       <label>优先级<select aria-label={`${issue.title} 优先级`} value={draft.priority} disabled={saving} onChange={event => setDraft({ ...draft, priority: event.target.value as Issue['priority'] })}><option value="low">低</option><option value="medium">中</option><option value="high">高</option></select></label>
       <button disabled={saving}>保存内容</button><button type="button" disabled={saving} onClick={() => setDraft(null)}>取消编辑</button>
       <p>远端更新保留当前草稿；保存内容不会覆盖处理状态、点位或快照。</p>
-    </form> : <button onClick={() => { setDraft({ title: issue.title, description: issue.description, priority: issue.priority }); setError(''); setMessage('') }}>编辑内容</button>}
+    </form> : <button disabled={saving} onClick={() => { setDraft({ title: issue.title, description: issue.description, priority: issue.priority }); setError(''); setMessage('') }}>编辑内容</button>}
     <dl><dt>标记位置（米）</dt><dd>x: {issue.position.x}, y: {issue.position.y}, z: {issue.position.z}</dd><dt>创建时间</dt><dd>{new Date(issue.createdAt).toLocaleString()}</dd><dt>更新时间</dt><dd>{new Date(issue.updatedAt).toLocaleString()}</dd></dl>
     <label>处理状态 <select aria-label={`${issue.title} 处理状态`} value={issue.status} disabled={saving} onChange={event => { void changeStatus(event.target.value as Issue['status']) }}>
       <option value="open">待处理</option><option value="in_progress">处理中</option><option value="resolved">已解决</option>
     </select></label>
+    <button disabled={saving} onClick={() => { setConfirmDelete(true); setConfirmedTitle(''); setError('') }}>永久删除</button>
+    {confirmDelete && <dialog open className="delete-confirmation" aria-label="永久删除问题">
+      <h3>永久删除“{issue.title}”</h3>
+      <p>问题、现场照片及扫描模型将永久删除，无法恢复。请输入当前完整标题确认。</p>
+      <label>确认标题<input aria-label="确认删除标题" value={confirmedTitle} disabled={saving} onChange={event => setConfirmedTitle(event.target.value)} /></label>
+      <button disabled={saving || confirmedTitle !== issue.title} onClick={() => { void permanentlyDelete() }}>确认永久删除</button>
+      <button disabled={saving} onClick={() => setConfirmDelete(false)}>取消删除</button>
+      {saving && <p role="status">正在保存，请等待…</p>}
+      {error && <p role="alert">{error}</p>}
+    </dialog>}
     {saving && <p role="status">正在保存…</p>}
     {message && <p role="status">{message}</p>}
-    {error && <p role="alert">{error}</p>}
+    {error && !confirmDelete && <p role="alert">{error}</p>}
   </article>
 }
 
@@ -133,6 +155,6 @@ export default function App() {
     {error && <section role="alert"><strong>{error}</strong><p>确认 Go 服务已启动、地址正确且允许浏览器跨域访问。</p><button onClick={() => { setLoading(true); setError(''); setRevision(value => value + 1) }} disabled={loading}>重试</button></section>}
     {loading && <p role="status">正在加载问题…</p>}
     {!loading && !error && issues.length === 0 && <p className="empty">暂无问题。请先在手机上选点并提交，再点击刷新。</p>}
-    {!loading && !error && <section aria-label="问题列表" className="issues">{issues.map(issue => <IssueCard key={`${activeAddress}/${issue.id}`} issue={issue} address={activeAddress} onSaved={() => setRevision(value => value + 1)} />)}</section>}
+    {!loading && !error && <section aria-label="问题列表" className="issues">{issues.map(issue => <IssueCard key={`${activeAddress}/${issue.id}`} issue={issue} address={activeAddress} onSaved={() => setRevision(value => value + 1)} onDeleted={() => { setIssues(current => current.filter(item => item.id !== issue.id)); setRevision(value => value + 1) }} />)}</section>}
   </main>
 }

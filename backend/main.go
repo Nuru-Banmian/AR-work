@@ -41,6 +41,7 @@ type Issue struct {
 
 type api struct {
 	mu          sync.Mutex
+	deleted     map[string]bool
 	path        string
 	models      map[string]json.RawMessage
 	media       map[string][]byte
@@ -53,11 +54,13 @@ type api struct {
 
 // The original result is retained even when the issue's status changes later.
 type creation struct {
-	Fingerprint string `json:"fingerprint"`
-	Result      Issue  `json:"result"`
+	Fingerprint string `json:"fingerprint,omitempty"`
+	Result      *Issue `json:"result,omitempty"`
+	IssueID     string `json:"issueId,omitempty"`
 }
 
 type snapshot struct {
+	Deleted  map[string]bool            `json:"deleted,omitempty"`
 	Models   map[string]json.RawMessage `json:"models,omitempty"`
 	Media    map[string][]byte          `json:"media,omitempty"`
 	Issues   []Issue                    `json:"issues"`
@@ -66,7 +69,7 @@ type snapshot struct {
 }
 
 func newAPI(path, allowedOrigins string) (http.Handler, error) {
-	a := &api{remarks: map[string]remarkReceipt{}, models: map[string]json.RawMessage{}, media: map[string][]byte{}, path: path, issues: []Issue{}, origins: map[string]bool{}, requests: map[string]creation{}, subscribers: map[chan struct{}]bool{}}
+	a := &api{deleted: map[string]bool{}, remarks: map[string]remarkReceipt{}, models: map[string]json.RawMessage{}, media: map[string][]byte{}, path: path, issues: []Issue{}, origins: map[string]bool{}, requests: map[string]creation{}, subscribers: map[chan struct{}]bool{}}
 	for _, origin := range strings.Split(allowedOrigins, ",") {
 		a.origins[strings.TrimSpace(origin)] = true
 	}
@@ -79,6 +82,9 @@ func newAPI(path, allowedOrigins string) (http.Handler, error) {
 			var stored snapshot
 			err = json.Unmarshal(data, &stored)
 			a.issues = stored.Issues
+			if stored.Deleted != nil {
+				a.deleted = stored.Deleted
+			}
 			if stored.Remarks != nil {
 				a.remarks = stored.Remarks
 			}
@@ -101,7 +107,7 @@ func newAPI(path, allowedOrigins string) (http.Handler, error) {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return nil, err
 	}
-	if err := cleanupSnapshotTemps(path, a.issues); err != nil {
+	if err := cleanupStoredTemps(path, snapshot{Issues: a.issues, Deleted: a.deleted}); err != nil {
 		return nil, err
 	}
 	return a, nil
@@ -126,7 +132,7 @@ func (a *api) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		w.Header().Set("Access-Control-Allow-Origin", origin)
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Idempotency-Key")
 	}
 	if r.Method == http.MethodOptions {
@@ -197,6 +203,10 @@ func (a *api) issue(w http.ResponseWriter, r *http.Request) {
 		fail(w, 404, "not_found", "Endpoint not found")
 		return
 	}
+	if detail && r.Method == "DELETE" {
+		a.deleteIssue(w, r, parts[0])
+		return
+	}
 	if (detail && r.Method != "GET") || ((status || content || position) && r.Method != "PATCH") {
 		fail(w, 405, "method_not_allowed", "Use GET for details or PATCH for status/content/position")
 		return
@@ -247,6 +257,10 @@ func (a *api) issue(w http.ResponseWriter, r *http.Request) {
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if a.deleted[parts[0]] {
+		deletedIssue(w, parts[0])
+		return
+	}
 	for index, issue := range a.issues {
 		if issue.ID != parts[0] {
 			continue
@@ -262,7 +276,7 @@ func (a *api) issue(w http.ResponseWriter, r *http.Request) {
 			issue.UpdatedAt = time.Now().UTC()
 			next := append([]Issue{}, a.issues...)
 			next[index] = issue
-			if err := saveIssues(a.path, snapshot{Issues: next, Requests: a.requests, Media: a.media, Models: a.models, Remarks: a.remarks}); err != nil {
+			if err := saveIssues(a.path, snapshot{Deleted: a.deleted, Issues: next, Requests: a.requests, Media: a.media, Models: a.models, Remarks: a.remarks}); err != nil {
 				log.Printf("save issue: %v", err)
 				fail(w, 500, "storage_error", "Could not save issue; data was not changed")
 				return
@@ -371,10 +385,14 @@ func (a *api) create(w http.ResponseWriter, r *http.Request) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if previous, ok := a.requests[key]; key != "" && ok {
+		if previous.Result == nil {
+			deletedIssue(w, previous.IssueID)
+			return
+		}
 		if previous.Fingerprint != fingerprint {
 			fail(w, 409, "idempotency_conflict", "This key was already used with different content")
 		} else {
-			result := previous.Result
+			result := *previous.Result
 			// After a complete scene replacement, stable attachment URLs refer to
 			// the current scene. Do not combine them with an old creation position.
 			for _, current := range a.issues {
@@ -393,7 +411,7 @@ func (a *api) create(w http.ResponseWriter, r *http.Request) {
 		nextRequests[k] = value
 	}
 	if key != "" {
-		nextRequests[key] = creation{fingerprint, issue}
+		nextRequests[key] = creation{Fingerprint: fingerprint, Result: &issue}
 	}
 	nextModels := cloneModels(a.models)
 	if input.Model != nil {
@@ -403,7 +421,7 @@ func (a *api) create(w http.ResponseWriter, r *http.Request) {
 	if len(photo) > 0 {
 		nextMedia[issue.ID] = photo
 	}
-	if err := saveIssues(a.path, snapshot{Issues: next, Requests: nextRequests, Media: nextMedia, Models: nextModels, Remarks: a.remarks}); err != nil {
+	if err := saveIssues(a.path, snapshot{Deleted: a.deleted, Issues: next, Requests: nextRequests, Media: nextMedia, Models: nextModels, Remarks: a.remarks}); err != nil {
 		log.Printf("save issues: %v", err)
 		fail(w, 500, "storage_error", "Could not save issue; data was not changed")
 		return
@@ -421,7 +439,7 @@ func saveIssues(path string, stored snapshot) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return err
 	}
-	if err := cleanupSnapshotTemps(path, stored.Issues); err != nil {
+	if err := cleanupStoredTemps(path, stored); err != nil {
 		return err
 	}
 	file, err := os.CreateTemp(filepath.Dir(path), ".issues-"+filepath.Base(path)+"-*.tmp")

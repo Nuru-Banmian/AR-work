@@ -100,6 +100,38 @@ public static class ReceiverQueueChecks
             var retained = queue.Add(moved.Address, "/api/reports", body, "unrelated", true);
             queue.ForgetSynced(moved.Address, "saved");
             Check(queue.List(moved.Address).Length == 1 && queue.Get(retained.key).body == body, "retiring old acknowledged copies preserves unrelated pending data");
+            var libraryMesh = new SurfaceMeshData(0.5f);
+            libraryMesh.Vertices.AddRange(new[] {Vector3.zero, new Vector3(0.2f,0,0), new Vector3(0,0.2f,0)});
+            libraryMesh.Triangles.AddRange(new[] {0,1,2});
+            var libraryPath = SurfaceScanStore.Save(Path.Combine(root,"surface-scans-v1"),libraryMesh,1,3);
+            queue = new ReportQueue(Path.Combine(root, "delete-http")); queue.RememberReceiver(moved.Address,A);
+            queue.Add(moved.Address,"/api/reports",body,"deleted-create",true);
+            moved.Gone = true;
+            await new ReportQueueSender(queue).UploadNext(moved.Address,client);
+            queue = new ReportQueue(Path.Combine(root,"delete-http"));
+            Check(queue.Get("deleted-create").state == "deleted" && string.IsNullOrEmpty(queue.Get("deleted-create").body) && string.IsNullOrEmpty(queue.Get("deleted-create").receipt), "deleted creation scrubs photo model and receipt across restart");
+            int attempts = moved.Posts;
+            await new ReportQueueSender(queue).UploadNext(moved.Address,client,"deleted-create");
+            Check(moved.Posts == attempts,"deleted creation never retries even manually after restart");
+            queue.Add(moved.Address,"/api/issues/saved/position",remarkBody,"deleted-remark",true);
+            await new ReportQueueSender(queue).UploadNext(moved.Address,client,"deleted-remark");
+            Check(queue.Get("deleted-remark").state == "deleted" && queue.Get("deleted-remark").serverId == "saved", "deleted replacement terminates without reviving scene");
+            moved.Gone = false;
+            queue.Add(moved.Address,"/api/reports",body,"synced-history",true);
+            queue.Complete("synced-history","gone-history","{\"data\":{\"id\":\"gone-history\"}}");
+            queue.Add(moved.Address,"/api/reports",body,"keep-pending",true);
+            queue.Add(moved.Address,"/api/issues/gone-history/position",remarkBody,"pending-remark",true);
+            queue.RememberReceiver(other.Address,B);
+            queue.Add(other.Address,"/api/reports",body,"other-receiver",true);
+            queue.Reconcile(moved.Address,new[] {"saved"});
+            queue = new ReportQueue(Path.Combine(root,"delete-http"));
+            Check(queue.Get("synced-history").state == "deleted" && queue.Get("pending-remark").state == "deleted", "full snapshot removes merged history and pending replacement after restart");
+            Check(queue.Get("keep-pending").body == body && queue.Get("other-receiver").body == body, "deletion preserves unknown pending creation and other receiver queue");
+            queue.Complete("synced-history","gone-history","old photo model receipt");
+            queue.Fail("synced-history","late failure");
+            Check(queue.Get("synced-history").state == "deleted" && string.IsNullOrEmpty(queue.Get("synced-history").receipt), "late acknowledgement and failure cannot restore deleted attachments");
+            Check(SurfaceScanStore.Load(libraryPath).Geometry.Vertices.Count == 3 && File.Exists(Path.ChangeExtension(libraryPath,"obj")), "independent model library and preview export survive issue deletion");
+
 
 
         }
@@ -109,7 +141,7 @@ public static class ReceiverQueueChecks
         private readonly HttpListener listener = new HttpListener();
         public readonly string Address;
         public volatile string Identity;
-        public volatile bool Fail, LegacyService, IncludeModel, DropReceipt, WrongId;
+        public volatile bool Fail, LegacyService, IncludeModel, DropReceipt, WrongId, Gone;
         public volatile int Posts;
         public string Body, Key, Target, Method;
         public TaskCompletionSource<bool> HandshakeStarted, ReleaseHandshake;
@@ -130,6 +162,7 @@ public static class ReceiverQueueChecks
                             response = "{\"data\":{\"id\":\"saved\",\"position\":{\"x\":0,\"y\":0,\"z\":0},\"snapshotUrl\":\"/snapshot\"}}";
                             if (IncludeModel) response = response.Replace("\"snapshotUrl\"", "\"modelUrl\":\"/model\",\"snapshotUrl\"");
                             if (WrongId) response = response.Replace("saved", "another");
+                            if (Gone) { context.Response.StatusCode = 410; response = "{\"error\":{\"code\":\"issue_deleted\",\"issueId\":\"saved\"}}"; }
                             if (DropReceipt) { DropReceipt = false; context.Response.Abort(); continue; }
                         } else response = LegacyService ? "{\"data\":{\"status\":\"ok\"}}" : "{\"data\":{\"id\":\"" + Identity + "\",\"name\":\"fixture\",\"protocol\":1,\"port\":" + port + "}}";
                         if (request.Url.AbsolutePath == "/api/receiver" && ReleaseHandshake != null) {

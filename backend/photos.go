@@ -51,6 +51,11 @@ func (a *api) readSnapshot(w http.ResponseWriter, r *http.Request) {
 	}
 	id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/issues/"), "/snapshot")
 	a.mu.Lock()
+	if a.deleted[id] {
+		a.mu.Unlock()
+		deletedIssue(w, id)
+		return
+	}
 	data := a.media[id]
 	a.mu.Unlock()
 	if len(data) == 0 {
@@ -59,7 +64,7 @@ func (a *api) readSnapshot(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", http.DetectContentType(data))
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(200)
 	_, _ = w.Write(data)
 }

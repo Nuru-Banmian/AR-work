@@ -114,6 +114,11 @@ func (a *api) readModel(w http.ResponseWriter, r *http.Request) {
 	}
 	id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/issues/"), "/model")
 	a.mu.Lock()
+	if a.deleted[id] {
+		a.mu.Unlock()
+		deletedIssue(w, id)
+		return
+	}
 	data, ok := a.models[id]
 	a.mu.Unlock()
 	if !ok {

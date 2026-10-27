@@ -280,6 +280,21 @@ public sealed class InspectionNavigationRunner : MonoBehaviour
         Check(!PlayerPrefs.HasKey("arwork.pending-report"), "durable migration clears legacy preference");
         form.ShowHome(); yield return new WaitForSecondsRealtime(1);
         Check(lastPostPort == 18082, "another service never uploads migrated request");
+        yield return new WaitForSecondsRealtime(1);
+        var remoteButton = Array.Find(rows.GetComponentsInChildren<Button>(), button => button.GetComponentInChildren<Text>().text.Contains("Server B"));
+        remoteButton.onClick.Invoke(); yield return new WaitForSecondsRealtime(1);
+        Field<InputField>(history,"title").text = "deleted detail draft";
+        Field<Button>(history,"remark").onClick.Invoke();
+        Check(history.IsRemarking,"deletion fixture opens restored remark");
+        responseMode = 2; history.GetComponent<IssueLiveUpdates>().Refresh(); yield return new WaitForSecondsRealtime(1);
+        Check(history.IsRemarking && remarkQueue.Get("restored-remark").state != "deleted", "disconnection does not infer deletion or destroy pending replacement");
+        responseMode = 1; history.GetComponent<IssueLiveUpdates>().Refresh(); yield return new WaitForSecondsRealtime(3);
+        Check(!history.IsRemarking && !probe.CameraActive && Field<string>(history,"selectedId") == null && !Field<GameObject>(history,"detailPage").activeSelf, "reconnect removes open deleted detail and exits remark without promoting anchor");
+        Check(remarkQueue.Get("restored-remark").state == "deleted" && string.IsNullOrEmpty(remarkQueue.Get("restored-remark").body), "reconnect scrubs frozen replacement rather than retrying deleted issue");
+        Check(localQueue.Get(localEntry.key).state == "deleted" && string.IsNullOrEmpty(localQueue.Get(localEntry.key).receipt), "deleted merged local receipt cannot reappear in empty remote list");
+        Check(queue.Get("frozen-key").body == frozen && queue.Get("frozen-key").state == "pending", "deletion at receiver B preserves pending report for receiver A");
+        Check(Field<Text>(history,"message").text.Contains("删除"), "phone clearly explains permanent deletion");
+
 
     }
 }

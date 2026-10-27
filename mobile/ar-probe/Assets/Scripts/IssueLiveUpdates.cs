@@ -152,7 +152,7 @@ public sealed class IssueLiveUpdates : MonoBehaviour
                         SetState(connected ? "已连接" : "连接中断，正在重连，可手动刷新");
                         applied = true;
                     }
-                    catch (ArgumentException) { }
+                    catch (Exception error) { Debug.LogWarning("问题同步或本地清理未完成：" + error.Message); }
                 }
                 if (!applied) { history.MarkSyncUnavailable(address); dirty = true; retryAt = Time.realtimeSinceStartup + 2f; SetState("同步未完成，旧状态请核对最近同步时间，正在重试"); }
             }

@@ -96,6 +96,17 @@ public sealed class LocalReports : MonoBehaviour
         nextAttempt = 0;
     }
 
+    public void Reconcile(string address, string[] existingIds)
+    {
+        if (failure != null) throw new IOException(failure);
+        queue.Reconcile(address, existingIds);
+        foreach (var entry in queue.List(address).Where(item => item.state == "deleted")) {
+            GetComponent<ArProbe>()?.RetireIssueMarker(address, entry.serverId);
+            GetComponent<ArProbe>()?.RetireIssueMarker(address, "local-" + entry.key);
+            if (selected == entry.key) { Hide(); GetComponent<IssueHistoryPanel>()?.NotifyDeletedIssue(address, entry.serverId); }
+        }
+    }
+
     public void RenderRows(Transform rows, IssueHistoryPanel.Issue[] remote)
     {
         if (failure != null) {
@@ -108,6 +119,7 @@ public sealed class LocalReports : MonoBehaviour
             foreach (var issue in remote.Where(item => !string.IsNullOrEmpty(item.sceneRevision)))
                 queue.ForgetSynced(server(), issue.id);
             foreach (var entry in queue.List(server())) {
+                if (entry.state == "deleted") continue;
                 if (entry.state == "synced" && remote.Any(issue => issue.id == entry.serverId)) continue;
                 var payload = JsonUtility.FromJson<ReportPayload>(entry.body);
                 var button = IssueReportForm.ButtonAt(rows, payload.title + "\n" + State(entry) + " · " + ProcessingState(entry) +
@@ -134,7 +146,9 @@ public sealed class LocalReports : MonoBehaviour
     private void Show(string key)
     {
         try {
-            var entry = queue.Get(key); var payload = JsonUtility.FromJson<ReportPayload>(entry.body);
+            var entry = queue.Get(key);
+            if (entry.state == "deleted") { Hide(); closed(); return; }
+            var payload = JsonUtility.FromJson<ReportPayload>(entry.body);
             selected = key; title.text = payload.title; description.text = payload.description;
             priorityIndex = Array.IndexOf(priorities, payload.priority); SetPriority();
             title.interactable = description.interactable = priority.interactable = save.interactable = !entry.frozen;
@@ -185,6 +199,11 @@ public sealed class LocalReports : MonoBehaviour
             if (this == null) return;
             foreach (var entry in queue.List(uploadServer).Where(item => item.state == "synced"))
                 GetComponent<ArProbe>()?.AcknowledgeQueuedMarker(uploadServer, entry.key, entry.serverId);
+            foreach (var entry in queue.List(uploadServer).Where(item => item.state == "deleted")) {
+                GetComponent<ArProbe>()?.RetireIssueMarker(uploadServer, "local-" + entry.key);
+                GetComponent<ArProbe>()?.RetireIssueMarker(uploadServer, entry.serverId);
+                if (selected == entry.key) { Hide(); GetComponent<IssueHistoryPanel>()?.NotifyDeletedIssue(uploadServer, entry.serverId); }
+            }
             nextAttempt = Time.realtimeSinceStartup + (attempted ? 2 : 5);
             if (IsOpen && !save.interactable) Show(selected);
             if (attempted) changed();

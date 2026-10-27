@@ -56,7 +56,7 @@ public sealed class IssueHistoryPanel : MonoBehaviour
     private readonly Dictionary<string, Content> drafts = new Dictionary<string, Content>();
     private IssuePhotoView photoView;
     private Issue[] remoteRows = new Issue[0];
-    private bool online;
+    private bool online, deletionNotice;
     private Issue displayedIssue;
     private readonly Dictionary<string, string> syncTimes = new Dictionary<string, string>();
     private string SyncKey => receiverScope + "/" + (selectedId ?? "");
@@ -170,7 +170,7 @@ public sealed class IssueHistoryPanel : MonoBehaviour
         bool changedServer = server != address || receiverScope != nextScope;
         receiverScope = nextScope;
         server = address; selectedId = null; detailLoaded = false; online = false;
-        if (changedServer) remoteRows = new Issue[0];
+        if (changedServer) { remoteRows = new Issue[0]; deletionNotice = false; }
         RenderList(remoteRows);
         panel.SetActive(true); ShowPage(); BeginLoad();
     }
@@ -261,6 +261,11 @@ public sealed class IssueHistoryPanel : MonoBehaviour
             request.timeout = 15;
             yield return request.SendWebRequest();
             if (request.result != UnityWebRequest.Result.Success) {
+                if (request.responseCode == 410 && selectedId != null) {
+                    RemoveDeletedSelection();
+                    loadRequest = null; loading = false; SetBusy(false);
+                    GetComponent<IssueLiveUpdates>()?.Refresh(); yield break;
+                }
                 MarkSyncUnavailable(server);
                 message.text = InspectionUi.Error(request) + "已同步记录只读，旧状态截至 " + SyncTime + "。本地记录仍可查看，可点击刷新重试。";
             }
@@ -272,9 +277,10 @@ public sealed class IssueHistoryPanel : MonoBehaviour
                     {
                         var issues = JsonUtility.FromJson<IssueList>(request.downloadHandler.text)?.data;
                         if (issues == null) throw new ArgumentException("Missing issue list");
+                        ReconcileSnapshot(server, issues);
                         MarkSynced();
                         RenderList(issues);
-                        message.text = issues.Length == 0 ? "暂无服务器问题，本地记录见列表。" : "共 " + issues.Length + " 个问题，点击查看详情。";
+                        message.text = (deletionNotice ? "问题已被永久删除，相关本地记录与现场标记已移除。\n" : "") + (issues.Length == 0 ? "暂无服务器问题，本地记录见列表。" : "共 " + issues.Length + " 个问题，点击查看详情。");
                     }
                     else
                     {
@@ -285,7 +291,7 @@ public sealed class IssueHistoryPanel : MonoBehaviour
                         message.text = drafts.ContainsKey(DraftKey) ? "状态已更新，未保存的内容已保留。" : "可修改内容或重新标记。";
                     }
                 }
-                catch (ArgumentException) { MarkSyncUnavailable(server); message.text = "返回数据异常，已同步记录只读，草稿已保留，请刷新重试。"; }
+                catch (Exception error) { MarkSyncUnavailable(server); message.text = "同步或本地清理未完成，请保留应用数据并刷新重试。"; Debug.LogException(error); }
             }
         }
         loadRequest = null; loading = false; SetBusy(false);
@@ -322,13 +328,15 @@ public sealed class IssueHistoryPanel : MonoBehaviour
 
     public void ApplyLiveIssues(string address, Issue[] issues)
     {
-        if (address != server || !IsOpen || busy) return;
+        if (address != server || busy) return;
+        ReconcileSnapshot(address, issues);
+        if (!IsOpen) return;
         KeepDraft();
         MarkSynced();
         if (selectedId == null)
         {
             RenderList(issues);
-            message.text = issues.Length == 0 ? "暂无服务器问题，本地记录见列表。" : "共 " + issues.Length + " 个问题，点击查看详情。";
+            message.text = (deletionNotice ? "问题已被永久删除，相关本地记录与现场标记已移除。\n" : "") + (issues.Length == 0 ? "暂无服务器问题，本地记录见列表。" : "共 " + issues.Length + " 个问题，点击查看详情。");
         }
         else foreach (var issue in issues)
         {
@@ -337,6 +345,44 @@ public sealed class IssueHistoryPanel : MonoBehaviour
         }
         // Do not change remark position, replacement draft or save/cancel controls.
         if (!IsRemarking) SetBusy(false);
+    }
+
+    private bool ReconcileSnapshot(string address, Issue[] issues)
+    {
+        if (issues.Any(issue => issue == null || string.IsNullOrEmpty(issue.id)) || issues.Select(issue => issue.id).Distinct().Count() != issues.Length)
+            throw new ArgumentException("Invalid full issue snapshot; local records retained");
+        var ids = issues.Select(issue => issue.id).ToArray();
+        GetComponent<LocalReports>()?.Reconcile(address, ids);
+        var replacements = new ReportQueue(Path.Combine(Application.persistentDataPath, "remark-queue-v1"));
+        if (receiverScope != address) replacements.RememberReceiver(address, receiverScope);
+        replacements.Reconcile(address, ids);
+        bool deleted = remoteRows.Any(issue => !ids.Contains(issue.id)) || (selectedId != null && !ids.Contains(selectedId));
+        if (selectedId != null && !ids.Contains(selectedId)) RemoveDeletedSelection();
+        foreach (var key in drafts.Keys.Where(key => key.StartsWith(receiverScope + "/", StringComparison.Ordinal) && !ids.Contains(key.Substring(receiverScope.Length + 1))).ToArray())
+            drafts.Remove(key);
+        probe.ReconcileIssueMarkers(address, ids);
+        if (deleted) deletionNotice = true;
+        return deleted;
+    }
+
+    public void NotifyDeletedIssue(string address, string id)
+    {
+        if (server != address) return;
+        deletionNotice = true;
+        if (selectedId == id && !busy) RemoveDeletedSelection();
+        message.text = "问题已被永久删除，相关本地记录与现场标记已移除。";
+    }
+
+    private void RemoveDeletedSelection()
+    {
+        deletionNotice = true;
+        var id = selectedId;
+        if (IsRemarking) EndRemark(false);
+        drafts.Remove(DraftKey); displayedIssue = null; detailLoaded = false;
+        probe.RetireIssueMarker(server, id);
+        selectedId = null; photoView.Clear(); ShowPage();
+        remoteRows = remoteRows.Where(issue => issue.id != id).ToArray(); RenderList(remoteRows);
+        message.text = "问题已被永久删除，相关本地记录与现场标记已移除。";
     }
 
     private void RequireIssue(Issue issue)
@@ -373,6 +419,7 @@ public sealed class IssueHistoryPanel : MonoBehaviour
             request.SetRequestHeader("Content-Type", "application/json"); request.timeout = 15;
             yield return request.SendWebRequest();
             if (request.result != UnityWebRequest.Result.Success) {
+                if (request.responseCode == 410) { SetBusy(false); RemoveDeletedSelection(); GetComponent<IssueLiveUpdates>()?.Refresh(); yield break; }
                 MarkSyncUnavailable(server);
                 message.text = InspectionUi.Error(request) + "结果待确认，草稿已保留。当前只读，请刷新核对后重试。";
             }
@@ -464,6 +511,9 @@ public sealed class IssueHistoryPanel : MonoBehaviour
         try {
             if (upload.IsFaulted || upload.IsCanceled) throw new IOException("替换回执未确认", upload.Exception);
             var entry = remarkQueue.Get(remarkKey);
+            if (entry.state == "deleted") {
+                SetBusy(false); RemoveDeletedSelection(); GetComponent<IssueLiveUpdates>()?.Refresh(); yield break;
+            }
             if (entry.state != "synced") throw new IOException(entry.error);
             var result = JsonUtility.FromJson<IssueResult>(entry.receipt);
             RequireIssue(result?.data);

@@ -83,6 +83,10 @@ func (a *api) replacePosition(w http.ResponseWriter, r *http.Request) {
 	fingerprint := hex.EncodeToString(digest[:])
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if a.deleted[parts[0]] {
+		deletedIssue(w, parts[0])
+		return
+	}
 	for index, issue := range a.issues {
 		if issue.ID != parts[0] {
 			continue
@@ -131,7 +135,7 @@ func (a *api) replacePosition(w http.ResponseWriter, r *http.Request) {
 		}
 		// One file replacement retires old bytes, including its temporary file. No
 		// attachment or previous scene is copied into the durable replay receipt.
-		if err := saveIssues(a.path, snapshot{Issues: issues, Requests: a.requests, Media: media, Models: models, Remarks: receipts}); err != nil {
+		if err := saveIssues(a.path, snapshot{Deleted: a.deleted, Issues: issues, Requests: a.requests, Media: media, Models: models, Remarks: receipts}); err != nil {
 			fail(w, 500, "storage_error", "Could not save complete replacement; original data retained")
 			return
 		}

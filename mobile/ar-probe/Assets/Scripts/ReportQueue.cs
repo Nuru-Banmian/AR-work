@@ -97,7 +97,7 @@ public sealed class ReportQueue
         var entry = Get(key);
         // A manually recovered remark must revalidate its current scene receipt;
         // creation acknowledgements never need to resend their old frozen body.
-        if (entry.state == "synced" && !IsRemarkEndpoint(entry.endpoint)) throw new InvalidOperationException("Already acknowledged");
+        if (entry.state == "deleted" || (entry.state == "synced" && !IsRemarkEndpoint(entry.endpoint))) throw new InvalidOperationException("Already acknowledged or deleted");
         entry.frozen = true; entry.state = "uploading"; entry.error = null;
         Write(entry); return Get(key);
     }
@@ -107,7 +107,7 @@ public sealed class ReportQueue
     public void Fail(string key, string error)
     {
         var entry = Get(key);
-        if (entry.state == "synced") return;
+        if (entry.state == "synced" || entry.state == "deleted") return;
         entry.state = "failed"; entry.error = error; Write(entry);
     }
 
@@ -115,6 +115,7 @@ public sealed class ReportQueue
     {
         if (string.IsNullOrEmpty(serverId) || string.IsNullOrEmpty(receipt)) throw new ArgumentException("Missing receipt");
         var entry = Get(key);
+        if (entry.state == "deleted") return; // A late response cannot restore scrubbed local history.
         entry.serverId = serverId; entry.receipt = receipt; entry.state = "synced"; entry.error = null;
         entry.syncedAt = DateTimeOffset.UtcNow.ToString("O");
         Write(entry);
@@ -150,14 +151,38 @@ public sealed class ReportQueue
             File.Delete(PathFor(entry.key));
     }
 
+    // Keep only identity/routing so a late in-flight completion cannot recreate attachments.
+    public void Deleted(string key, string issueId)
+    {
+        if (string.IsNullOrEmpty(issueId)) throw new ArgumentException("Missing deleted issue identity");
+        var entry = Get(key);
+        entry.serverId = issueId; entry.state = "deleted"; entry.body = null; entry.receipt = null;
+        entry.error = null; entry.stage = null; entry.syncedAt = null; entry.frozen = true;
+        Write(entry);
+        var temporary = PathFor(key) + ".tmp";
+        if (File.Exists(temporary)) File.Delete(temporary);
+    }
+
+    public string[] Reconcile(string server, string[] existingIds)
+    {
+        var removed = new System.Collections.Generic.List<string>();
+        foreach (var entry in List(server)) {
+            var id = IsRemarkEndpoint(entry.endpoint) ? entry.endpoint.Split('/')[3] : entry.serverId;
+            if (entry.state == "deleted" || string.IsNullOrEmpty(id) || existingIds.Contains(id)) continue;
+            Deleted(entry.key, id); removed.Add(id);
+        }
+        return removed.Distinct().ToArray();
+    }
+
     private static void Validate(Entry entry)
     {
-        if (entry == null || entry.version != 1 || string.IsNullOrEmpty(entry.body) ||
+        if (entry == null || entry.version != 1 || (entry.state != "deleted" && string.IsNullOrEmpty(entry.body)) ||
             !Uri.TryCreate(entry.server, UriKind.Absolute, out var uri) ||
             (uri.Scheme != "http" && uri.Scheme != "https") || uri.AbsolutePath != "/" ||
             !string.IsNullOrEmpty(uri.Query) || !string.IsNullOrEmpty(uri.Fragment) || !string.IsNullOrEmpty(uri.UserInfo) ||
             (entry.endpoint != "/api/reports" && entry.endpoint != "/api/issues" && !IsRemarkEndpoint(entry.endpoint)) ||
-            (entry.state != "pending" && entry.state != "uploading" && entry.state != "failed" && entry.state != "synced") ||
+            (entry.state != "pending" && entry.state != "uploading" && entry.state != "failed" && entry.state != "synced" && entry.state != "deleted") ||
+            (entry.state == "deleted" && (string.IsNullOrEmpty(entry.serverId) || !string.IsNullOrEmpty(entry.body) || !string.IsNullOrEmpty(entry.receipt))) ||
             (entry.state == "synced" && (string.IsNullOrEmpty(entry.serverId) || string.IsNullOrEmpty(entry.receipt))))
             throw new InvalidDataException("Invalid local report; preserve application data");
     }

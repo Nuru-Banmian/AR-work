@@ -73,3 +73,11 @@ func generatedTemp(name, prefix string) bool {
 	}
 	return true
 }
+
+func cleanupStoredTemps(path string, stored snapshot) error {
+	known := append([]Issue{}, stored.Issues...)
+	for id := range stored.Deleted {
+		known = append(known, Issue{ID: id})
+	}
+	return cleanupSnapshotTemps(path, known)
+}
