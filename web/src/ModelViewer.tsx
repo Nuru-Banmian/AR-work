@@ -35,9 +35,9 @@ export function ModelViewer({ address, id, revision }: { address: string; id: st
       const material = new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide })
       scene.add(new THREE.Mesh(geometry, material))
       // Apex at local zero, base 2.5 cm along outward normal; same physical marker as Unity.
-      const markerGeometry = new THREE.BufferGeometry()
-      markerGeometry.setAttribute('position', new THREE.Float32BufferAttribute([0, 0, 0, -0.01, 0.025, 0.006, 0.01, 0.025, 0.006, 0, 0.025, -0.012], 3))
-      markerGeometry.setIndex([0, 2, 1, 0, 3, 2, 0, 1, 3, 1, 2, 3])
+      const markerGeometry = new THREE.ConeGeometry(0.01, 0.025, 32)
+      markerGeometry.translate(0, -0.0125, 0)
+      markerGeometry.rotateZ(Math.PI)
       const markerMaterial = new THREE.MeshBasicMaterial({ color: '#ffda24', side: THREE.DoubleSide })
       const marker = new THREE.Mesh(markerGeometry, markerMaterial)
       const p = data.marker.position, n = data.marker.normal

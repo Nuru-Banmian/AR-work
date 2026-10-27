@@ -12,8 +12,16 @@ public static class SurfaceScanChecks
         {
             Coordinates();
             var pointed=(Mesh)typeof(ArProbe).GetMethod("CreateMarkerMesh",System.Reflection.BindingFlags.Static|System.Reflection.BindingFlags.NonPublic).Invoke(null,null);
-            Require(pointed.vertices.Length==4 && pointed.vertices[0]==Vector3.zero && pointed.triangles.Length==12,
-                "triangular marker apex is exactly the selected position");
+            Require(pointed.vertices.Length==34 && pointed.vertices[0]==Vector3.zero && pointed.triangles.Length==192,
+                "round cone apex is exactly the selected position with a closed 32-segment base");
+            for (int ring=1;ring<=32;ring++) {
+                var vertex=pointed.vertices[ring];
+                Require(Mathf.Abs(vertex.y-0.025f)<1e-6f && Mathf.Abs(new Vector2(vertex.x,vertex.z).magnitude-0.01f)<1e-6f,
+                    "cone base is circular and extends outward from the clicked apex");
+            }
+            var markerPose=Matrix4x4.TRS(new Vector3(1,2,3),Quaternion.Euler(20,45,80),Vector3.one);
+            Require((markerPose.MultiplyPoint3x4(pointed.vertices[0])-new Vector3(1,2,3)).sqrMagnitude<1e-10f,
+                "rotating the cone never moves its tip away from the clicked point");
             Require(Mathf.Abs(pointed.bounds.size.x-0.02f)<1e-5 && pointed.bounds.min.y==0 && pointed.bounds.max.y<=0.03f,
                 "pointed marker is smaller than the former 5cm cube");
             UnityEngine.Object.DestroyImmediate(pointed);

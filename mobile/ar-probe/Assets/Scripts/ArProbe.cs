@@ -328,13 +328,24 @@ public sealed class ArProbe : MonoBehaviour
 
     internal static Mesh CreateMarkerMesh()
     {
-        var mesh=new Mesh { name="Pointed triangular marker" };
-        // Local +Y is the outward surface normal. The apex at zero touches the selected point.
-        mesh.vertices=new[] {Vector3.zero,new Vector3(-0.01f,0.025f,-0.006f),
-            new Vector3(0.01f,0.025f,-0.006f),new Vector3(0,0.025f,0.012f)};
-        mesh.triangles=new[] {0,1,2,0,2,3,0,3,1,1,3,2};
+        const int segments=32;
+        const float radius=0.01f, height=0.025f;
+        var mesh=new Mesh { name="Pointed round cone marker" };
+        // The apex is local zero; +Y is the outward surface normal.
+        var vertices=new Vector3[segments+2];
+        var triangles=new int[segments*6];
+        vertices[segments+1]=new Vector3(0,height,0);
+        for (int i=0;i<segments;i++) {
+            float angle=2*Mathf.PI*i/segments;
+            vertices[i+1]=new Vector3(radius*Mathf.Cos(angle),height,radius*Mathf.Sin(angle));
+            int current=i+1, next=(i+1)%segments+1, face=i*6;
+            triangles[face]=0; triangles[face+1]=current; triangles[face+2]=next;
+            triangles[face+3]=segments+1; triangles[face+4]=next; triangles[face+5]=current;
+        }
+        mesh.vertices=vertices; mesh.triangles=triangles;
         mesh.RecalculateNormals(); mesh.RecalculateBounds(); return mesh;
     }
+
     private void OnDestroy()
     {
         if (arCameraManager != null) arCameraManager.frameReceived-=OnCameraFrame;
