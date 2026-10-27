@@ -27,10 +27,21 @@ public static class InspectionNavigationChecks
 
     public static void Run()
     {
-        foreach (var name in new[] { "report-queue-v1", "remark-queue-v1" }) {
-            var queuePath = Path.Combine(Application.persistentDataPath, name);
+        var queuePaths = new[] { Path.Combine(Application.persistentDataPath, "report-queue-v1"), Path.Combine(Application.persistentDataPath, "remark-queue-v1") };
+        // Preflight every backup before moving anything. Never strand the first
+        // queue when a previous interrupted check owns the second backup.
+        foreach (var queuePath in queuePaths)
             if (Directory.Exists(queuePath + ".navigation-backup")) throw new IOException("Existing navigation backup; preserve it before running checks");
-            if (Directory.Exists(queuePath)) Directory.Move(queuePath, queuePath + ".navigation-backup");
+        var moved = new System.Collections.Generic.List<string>();
+        try {
+            foreach (var queuePath in queuePaths) {
+                if (!Directory.Exists(queuePath)) continue;
+                Directory.Move(queuePath, queuePath + ".navigation-backup"); moved.Add(queuePath);
+            }
+        } catch {
+            moved.Reverse();
+            foreach (var queuePath in moved) Directory.Move(queuePath + ".navigation-backup", queuePath);
+            throw;
         }
         foreach (var key in new[] { "arwork.server", "arwork.pending-report", "arwork.receiver-id" })
         {
