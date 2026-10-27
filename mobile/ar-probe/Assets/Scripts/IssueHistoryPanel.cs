@@ -366,7 +366,7 @@ public sealed class IssueHistoryPanel : MonoBehaviour
         KeepDraft(); probe.BeginRemark(); probe.EnterCamera(); hasRemarkPosition = false; snapshotReady = false; IsRemarking = true;
         GetComponent<IssueReportForm>().ShowRemarkNavigation(true);
         panel.SetActive(false); remarkPanel.SetActive(true); SetBusy(false);
-        remarkMessage.text = "请点击地面或墙面重新选点。保存成功后才替换原标记。";
+        remarkMessage.text = "请先扫描并暂停，再点击实物重新选点。保存成功后才替换原标记。";
     }
 
     public void MarkPositionSelected()

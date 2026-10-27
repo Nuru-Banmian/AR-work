@@ -1,0 +1,66 @@
+{
+  "reentry-consumer-first-after-depth/aligned-fixed-reentry-results.json": [
+    {
+      "cycle": 1,
+      "passed": true,
+      "nonBlackRatio": 0.997
+    },
+    {
+      "cycle": 2,
+      "passed": true,
+      "nonBlackRatio": 0.997
+    },
+    {
+      "cycle": 3,
+      "passed": true,
+      "nonBlackRatio": 0.997
+    }
+  ],
+  "reentry-consumer-first-double-close/results.json": [
+    {
+      "cycle": 1,
+      "closeCount": 2,
+      "passed": true,
+      "nonBlackRatio": 0.997
+    },
+    {
+      "cycle": 2,
+      "closeCount": 2,
+      "passed": true,
+      "nonBlackRatio": 0.998
+    },
+    {
+      "cycle": 3,
+      "closeCount": 2,
+      "passed": true,
+      "nonBlackRatio": 0.998
+    }
+  ],
+  "offline-reload-network.json": {
+    "airplane_mode_on": "1",
+    "wifi_on": "0",
+    "mobile_data": "0",
+    "defaultNetwork": "Active default network: none"
+  },
+  "restored-network.json": {
+    "airplane_mode_on": "0",
+    "wifi_on": "1",
+    "mobile_data": "0"
+  },
+  "apk": {
+    "bytes": 28028452,
+    "sha256": "01f1dc51cd764884b335ba40ada9bd62874dcc8d7f484bcb63f666f394551206"
+  },
+  "runtimeSourceSha256": {
+    "mobile/ar-probe/Assets/Scripts/ArProbe.cs": "b15062f994e98378dd3aa349da8b48e2aec41021e7e4f14ae4acd07214d0dda5",
+    "mobile/ar-probe/Assets/Scripts/IssueHistoryPanel.cs": "aae8bfaa626ffd494cfda2815aceb36dfb0a526ff19b6176a1a504f25b7ef0e0",
+    "mobile/ar-probe/Assets/Scripts/IssueReportForm.cs": "73f230218ba255f0148ba2652dc065805529707dfdbab1bf2aec44cc9d2ba17c",
+    "mobile/ar-probe/Assets/Editor/InspectionNavigationChecks.cs": "4c2f0f3ca447594289f7156d2ee334f5a2f479b32b4dfa586246b1eeba346d6e",
+    "mobile/ar-probe/Assets/Scripts/LocalSurfaceScanner.cs": "c42bb61cf064a8349580d7e5991b4a832849e541142fbc0322f0ba05421daef7",
+    "mobile/ar-probe/Assets/Scripts/SurfaceMeshData.cs": "a62a05b047385df829e9c0a84a0b2386d7ce6491a12cd60509c1f278817eedd3",
+    "mobile/ar-probe/Assets/Scripts/SurfaceScanStore.cs": "d5a9b25ccff6f3b8e3ad43b523d3aa908c385135654cd982b98bfd5c120c1add",
+    "mobile/ar-probe/Assets/Scripts/TsdfVolume.cs": "3ca3b9746edf0a1edef1249885dba3c1be15ef7cb30a6378af24229cfbde6822",
+    "mobile/ar-probe/Assets/Editor/SurfaceScanChecks.cs": "04e8ce2041d2b270e658783f17999b5fe94b9a4591e26402f38fd1b600d3e70f",
+    "mobile/ar-probe/Assets/Editor/SurfaceUiChecks.cs": "725a7f091427fa67cc30afa354bf5bd0eeb67db0e626efd4c12010604083c042"
+  }
+}
