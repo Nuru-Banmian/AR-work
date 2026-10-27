@@ -58,5 +58,17 @@ PC 复用现有 SSE 重新查询、按 updatedAt 刷新图片/大图与重建三
 
 - Go 全套 tests（12.389 秒）和 vet 通过。
 - 新 SSE 代理红绿回归及 npm test、前端 build/typecheck、lint 通过。
-- Unity 实际 HTTP 队列检查通过；最终导航回归与双轴复审结果将在提交收尾补记。
+- 当前累计 Unity 实际 HTTP 队列检查 27 项、导航回归 62 项通过，包含重新标记持久恢复与累计删除收敛场景。
 - 手机网络恢复/读取为 airplane=0、wifi=1、mobile_data=0；原 App、18088、原 README/AI_LOG/XR 改动保持不动。没有 push、merge 或关闭 #22，也没有启动 #28。
+
+- 源码复审范围为 `9456382…aa88b40`；本轮新增代码仅修复 PC SSE 上游中断传播及其真实 HTTP 回归，未修改 Android runtime。正常服务 18171 / 5198、两条真实记录、独立 App 和模型库保留，18173 回放服务与故障代理停止；当前服务信息保存在 `.local/issue25-device-final/services.json`。
+
+### Standards
+
+0 项剩余发现。SSE 中断限定 /api/events 且仅处理不完整响应；测试使用独立缓存并清理自己的 socket/服务，恢复环境变量，临时删除范围检查通过。
+
+### Spec
+
+0 项剩余发现。复审核对了最新手动连接/圆锥范围及真实冻结正文的键、长度、SHA256、附件；分别核对真实采集、录制资料回放与自动检查，没有将构建或合成数据冒充真机。
+
+Standards 0 / Spec 0；全部 #25 验收已具备对应证据。后续 #28 由主流程另行接续，本对话不启动下一任务。
