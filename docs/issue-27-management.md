@@ -44,3 +44,11 @@ npx --yes --package @playwright/cli playwright-cli -s=issue27 run-code --filenam
 Standards 初审：0 文档规则违反，2 个重复逻辑建议，另发现保存失败提示跨卸载丢失；Spec 初审：同一 P2，未发现其他缺失或越界。修复包括按记录保存反馈、统一当前记录键、清理 CSS 重复覆盖。最终复审结果见本 issue 的完成评论。
 
 #27 属于 PC 交付；本次未操作手机/Unity，未将合成模型测试称为真实扫描对应验收。#23/#24/#25/#26 的设备及网络未完成项继续由 #28 统一验收。未推送或合并，未关闭父规格。README、AI_LOG 和 Unity 模拟设置无关改动保留。
+
+## 最终检查（2026-10-27）
+
+候选提交 `3cac741`：四段浏览器验收整序列通过，输出在 `.local/issue27/final-{core,concurrency,stale,recovery}.log`；`go test ./...` 通过（12.294s）、`go vet ./...` 通过；前端 build/lint 通过，无 lint 警告。Standards / Spec 对 `f20ed0a...3cac741` 复审均为 0 剩余发现。
+
+截图已实际查看：`output/playwright/issue27-1366.png`（完整统计工具栏与表格）、`output/playwright/issue27-1024-details.png`（窄 PC 侧栏）；1920 宽度及编辑状态由浏览器断言覆盖。验收后独立演示服务 18142、Vite 5197 和浏览器会话 issue27 保留供查看，内有重新创建的三条合成记录；不得与 #26 的 18132、旧 18088 混用。
+
+本任务提交：`a136683` 实现、`41356ea` 行尾规范化、`3cac741` 复审修复与接续文档；后续文档提交仅补充本段最终证据。
